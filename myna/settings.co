@@ -66,7 +66,7 @@ view _line[label, value]
     return stack[p[label, color = 'muted', size = 'xs', weight = 'bold'], p[value], gap = 'xs']
 
 view render[]
-    return workbench.screen['Settings', 'Settings', a['New notebook', href = '/?naming=true'], stack[h1['Settings'], _form[], gap = 'm']]
+    return workbench.screen['Settings', 'Settings', workbench.new_notebook[], stack[h1['Settings'], _form[], gap = 'm']]
 
 --- the workspace's name and the time limit are kept, and a limit that is
 --- no number is refused

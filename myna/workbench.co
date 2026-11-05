@@ -110,8 +110,8 @@ view topbar[where, actions]
     return stack[
         row[
             p['`place_name` / `where`', color = 'muted', size = 'xs'],
-            row[field['Search', sought, type = 'text'], actions, gap = 's', align = 'center'],
-            justify = 'between', align = 'center'],
+            row[field['Search', sought, type = 'text'], actions, gap = 's', align = 'center', class = 'tools'],
+            justify = 'between', align = 'center', below = 'phone', becomes = 'stack'],
         results[],
         gap = 's']
 
@@ -122,4 +122,10 @@ view screen[section, where, actions, body]
         title['`where` · `place_name`'],
         sidebar[section],
         stack[topbar[where, actions], divider[], body, gap = 'm', pad = 'm', fill = 'true', class = 'main'],
-        gap = 'none', align = 'start']
+        gap = 'none', align = 'start', below = 'phone', becomes = 'stack', class = 'shell']
+
+--- the top bar's action on the pages that are not the notebooks: a link
+--- to the notebook page with its New notebook dialog open, drawn as the
+--- button the notebook page has there
+view new_notebook[]
+    return a['New notebook', href = '/?naming=true', class = 'button']

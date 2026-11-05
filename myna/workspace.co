@@ -139,7 +139,7 @@ fn put_cell[name, cell, source, live, at]
 
 --- every version of a notebook's cells, newest first
 fn versions[name]
-    empty = frame.new[version = [0], at = [''], cell = [0], live = [true], change = [''], source = ['']]
+    empty = frame.new[version = [0], at = [''], cell = [0], state = [''], change = [''], source = ['']]
     none = empty[empty.cell lt 0]
     if _empty[_at['_notebooks']]
         return none
@@ -153,8 +153,16 @@ fn versions[name]
         _preview[text_of[s]]
     ats = for a in mine.at
         short_at[text_of[a]]
-    shown = frame.new[version = mine._pos, at = ats, cell = mine.cell, live = mine.live, change = changes, source = mine.source]
+    states = for l in mine.live
+        _state_of[l]
+    shown = frame.new[version = mine._pos, at = ats, cell = mine.cell, state = states, change = changes, source = mine.source]
     return sort[shown, 'version', desc = true]
+
+--- a version's cell as it was left: saved, or deleted by that version
+fn _state_of[live]
+    if live
+        return 'saved'
+    return 'deleted'
 
 --- a moment written as ISO text, shown short: its date and time, in UTC
 fn short_at[at]

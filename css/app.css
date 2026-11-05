@@ -16,3 +16,44 @@
 /* a heading that begins a card, a drawer or a dialog needs no space above
    it (the runtime's margin is for headings between paragraphs) */
 h2:first-child { margin-top: 0; }
+
+/* the sidebar runs the page's height and stays in view as the page scrolls */
+.side { position: sticky; top: 0; min-height: 100vh; box-sizing: border-box; flex-shrink: 0; }
+
+/* a link that does what a button does is drawn as one (the top bar's
+   New notebook on the pages that are not the notebooks) */
+a.button { display: inline-block; font-size: 0.92rem; color: var(--crow-text); background: var(--crow-surface); border: 1px solid var(--crow-border); border-radius: 4px; padding: 0.42rem 0.95rem; text-decoration: none; white-space: nowrap; }
+a.button:hover { border-color: var(--crow-accent); }
+
+/* a cell's number, status and time stay on one line each; its buttons
+   go under them when the card is narrow */
+.cellbar p, .main button { white-space: nowrap; }
+.cells pre { margin: 0; }
+
+/* the New notebook dialog: its field over its buttons, each as wide as
+   the dialog */
+.naming { min-width: min(360px, 80vw); }
+.naming form { display: flex; flex-direction: column; gap: 0.75rem; }
+.naming .crow-field { display: flex; flex-direction: column; align-items: stretch; gap: 0.35rem; }
+.naming label { text-align: left; }
+.naming input { width: 100%; box-sizing: border-box; }
+.naming button { width: 100%; }
+
+/* narrower than a tablet the side panel goes under the cells, as wide */
+@media (max-width: 1023px) {
+  .about { width: auto !important; }
+}
+
+/* on a phone the sidebar is a bar over the page: the mark, then the
+   sections in a row that wraps */
+@media (max-width: 599px) {
+  .side { position: static; min-height: 0; width: auto !important; flex-direction: row !important; flex-wrap: wrap; align-items: center; }
+  .side > .row:first-child { width: 100%; }
+  .side > hr.divider { display: none; }
+  .side a { padding: 0.3rem 0.5rem !important; }
+  .main { padding: 12px !important; }
+  .tools { flex-wrap: wrap; }
+  .tools .crow-field { flex: 1 1 140px; }
+  .tools input { width: 100%; box-sizing: border-box; }
+  table { display: block; overflow-x: auto; }
+}

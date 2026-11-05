@@ -9,6 +9,15 @@ use myna.workbench
 
 picked = ''
 
+--- a table's columns as the reader wrote them: _pos is Magpie's own,
+--- each row's place in the log
+fn _shown_columns[names]
+    found = []
+    for c in names
+        if c ne '_pos'
+            found = push[found, c]
+    return found
+
 fn _kind_of[name]
     if starts[name, '_']
         return 'Myna'
@@ -22,10 +31,10 @@ derive listing
     counts = for n in names
         workspace.table_count[n]
     cols = for n in names
-        join[workspace.table_columns[n], ', ']
+        join[_shown_columns[workspace.table_columns[n]], ', ']
     kinds = for n in names
         _kind_of[n]
-    return frame.new[table = names, rows = counts, columns = cols, kept_by = kinds]
+    return frame.new[table = names, rows = counts, columns = cols, origin = kinds]
 
 derive folder
     return workspace.home[]
@@ -60,14 +69,24 @@ view _listing[]
             gap = 's']
     return table[l, key = 'table', click = pick, actions = map[Open = pick], sort = true]
 
+fn _rows_word[n]
+    if n eq 1
+        return '1 row'
+    return '`n` rows'
+
+view _rows[rows]
+    if len[rows] gt 50
+        return table[rows, hide = ['_pos'], page = 50, sort = true]
+    return table[rows, hide = ['_pos'], sort = true]
+
 view _picked[]
     name = chosen
     if name eq ''
         return p['Pick a table to see its rows', color = 'muted', size = 's']
     rows = preview
     return stack[
-        row[row[h2[name], p['`picked_count` rows · newest version of each key', color = 'muted', size = 's'], gap = 's', align = 'center'], button['Close', click = unpick], justify = 'between', align = 'center'],
-        table[rows, page = 50, sort = true],
+        row[row[h2[name], p['`_rows_word[picked_count]` · newest version of each key', color = 'muted', size = 's'], gap = 's', align = 'center'], button['Close', click = unpick], justify = 'between', align = 'center'],
+        _rows[rows],
         gap = 's', pad = 'm', surface = 'card', border = true]
 
 view _body[]
@@ -84,7 +103,7 @@ fn _where[name]
     return 'Catalog / `name`'
 
 view render[]
-    return workbench.screen['Catalog', _where[chosen], a['New notebook', href = '/?naming=true'], _body[]]
+    return workbench.screen['Catalog', _where[chosen], workbench.new_notebook[], _body[]]
 
 --- a table a cell wrote is listed with its size and opened to its rows
 test a_table_is_listed_and_opened[]

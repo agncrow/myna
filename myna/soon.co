@@ -4,7 +4,7 @@ use web, ui
 use myna.workbench
 
 view _soon[name, what, meanwhile]
-    return workbench.screen[name, name, a['New notebook', href = '/?naming=true'], stack[
+    return workbench.screen[name, name, workbench.new_notebook[], stack[
         h1[name],
         stack[
             p['Not built yet', weight = 'bold'],

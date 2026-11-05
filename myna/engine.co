@@ -336,9 +336,18 @@ fn _clean_line[line]
 
 --- what a run printed, its markers shown as the cells they begin
 fn cleaned[out]
-    lines = for line in split[out, '\n']
-        _clean_line[line]
-    return join[lines, '\n']
+    kept = []
+    titled = false
+    for line in split[out, '\n']
+        if starts[line, '@@name ']
+            if not titled
+                kept = push[kept, '── names the cells left ──']
+                titled = true
+            kept = push[kept, '   `slice[line, 7, len[line]]`']
+        else
+            if not starts[line, '@@end ']
+                kept = push[kept, _clean_line[line]]
+    return join[kept, '\n']
 
 test a_name_is_a_files[]
     assert[slug['Price triage'] eq 'price_triage']
@@ -393,5 +402,6 @@ test the_tables_a_notebook_reads_and_writes_are_named[]
     assert[writes[cells] eq ['by_item']]
 
 test a_runs_output_shows_its_cells[]
-    assert[cleaned['@@cell 0 1.5\n3\n@@end 2.0\n@@name xs array'] eq '── cell [1] ──\n3\n── end ──\n   xs array']
+    assert[cleaned['@@cell 0 1.5\n3\n@@end 2.0\n@@name xs array'] eq '── cell [1] ──\n3\n── names the cells left ──\n   xs array']
+    assert[cleaned['@@cell 0 1.5\n3\n@@end 2.0'] eq '── cell [1] ──\n3']
     assert[cleaned['.runs/n.page.co:10:5: undefined function'] eq 'program line 10:5: undefined function']

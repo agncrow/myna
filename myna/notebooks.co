@@ -443,6 +443,15 @@ view _cell_number[i, word, ms]
         p[_took[ms], color = 'muted', size = 's'],
         gap = 's', align = 'center']
 
+--- beside "editing": how the cell's last run ended, where it ran
+view _ran_word[i]
+    word = _word_of[i, cell_end, cell_ran, cell_sources]
+    if word eq 'not run'
+        return stack[]
+    if word eq 'changed'
+        return stack[]
+    return row[p['· last run', color = 'muted', size = 's'], _word[word], p[_took[_ms_of[i, cell_ms]], color = 'muted', size = 's'], gap = 'xs', align = 'center']
+
 fn _ms_of[i, ms]
     if i lt len[ms]
         return ms[i]
@@ -451,14 +460,14 @@ fn _ms_of[i, ms]
 view _editor[i, cid, last]
     return stack[
         row[
-            row[p['[`i + 1`]', font = 'mono', color = 'muted', size = 's'], p['editing', color = 'accent', size = 's', weight = 'bold'], gap = 's', align = 'center'],
+            row[p['[`i + 1`]', font = 'mono', color = 'muted', size = 's'], p['editing', color = 'accent', size = 's', weight = 'bold'], _ran_word[i], gap = 's', align = 'center'],
             row[
                 button['Run', click = run_to[cid], shortcut = 'ctrl+enter meta+enter', tip = 'Save, then run the cells down to this one (Ctrl+Enter)'],
                 button['Save', click = save, shortcut = 'ctrl+s meta+s', tip = 'Save the cell (Ctrl+S)'],
                 button['Cancel', click = cancel, shortcut = 'escape', tip = 'Forget the changes (Escape)'],
                 button['Delete', click = delete_cell[cid], confirm = 'Delete cell [`i + 1`]? Its versions stay in History.'],
-                gap = 'xs', align = 'center'],
-            justify = 'between', align = 'center'],
+                gap = 'xs', align = 'center', wrap = true],
+            justify = 'between', align = 'center', wrap = true, gap = 's', class = 'cellbar'],
         stack[field['', draft, lines = 10], class = 'code'],
         _output[i],
         gap = 's', pad = 'm', surface = 'card', border = true]
@@ -473,8 +482,8 @@ view _viewer[i, cid, source, last]
                 button['↑', click = move_up[cid], tip = 'Move the cell up', disabled = i eq 0],
                 button['↓', click = move_down[cid], tip = 'Move the cell down', disabled = i eq last],
                 button['Delete', click = delete_cell[cid], confirm = 'Delete cell [`i + 1`]? Its versions stay in History.'],
-                gap = 'xs', align = 'center'],
-            justify = 'between', align = 'center'],
+                gap = 'xs', align = 'center', wrap = true],
+            justify = 'between', align = 'center', wrap = true, gap = 's', class = 'cellbar'],
         _source[source],
         _output[i],
         gap = 's', pad = 'm', surface = 'card', border = true]
@@ -511,11 +520,16 @@ view _header[name]
                 gap = 'xs', pad = 's'], side = 'right'],
             button['History', click = open_history],
             button['Delete notebook', click = delete_notebook, confirm = 'Delete the notebook `name`? Its versions and runs stay in the logs.'],
-            gap = 's', align = 'center'],
+            gap = 's', align = 'center', wrap = true],
         justify = 'between', align = 'center', wrap = true]
 
 view _line[label, value]
     return stack[p[label, color = 'muted', size = 'xs', weight = 'bold'], p[value, size = 's'], gap = 'xs']
+
+fn _counted[n, word]
+    if n eq 1
+        return '1 `word`'
+    return '`n` `word`s'
 
 fn _listed[names, none]
     if len[names] eq 0
@@ -548,10 +562,11 @@ view _last_run[]
 
 view _about[]
     v = versions
+    saved = _counted[len[v], 'version']
     return stack[
         h2['This notebook'],
         _line['Cells', '`len[cell_ids]`'],
-        _line['Saved', '`len[v]` versions · each save a batch in _notebooks'],
+        _line['Saved', '`saved` · each save a batch in _notebooks'],
         _line['Reads', _listed[reads, 'no table']],
         _line['Writes', _listed[writes, 'no table']],
         _line['Schedule', _schedule_words[every, next_due]],
@@ -560,19 +575,23 @@ view _about[]
         divider[],
         p['Variables', color = 'muted', size = 'xs', weight = 'bold'],
         _variables[],
-        gap = 's', pad = 'm', surface = 'card', border = true, width = '300px']
+        gap = 's', pad = 'm', surface = 'card', border = true, width = '300px', class = 'about']
 
 view _runs_table[]
     r = runs
     if len[r] eq 0
         return p['no runs yet', color = 'muted', size = 's']
-    return table[r, key = 'run', hide = ['notebook'], actions = map[Output = show_run], page = 10]
+    if len[r] gt 10
+        return table[r, key = 'run', hide = ['notebook'], actions = map[Output = show_run], page = 10]
+    return table[r, key = 'run', hide = ['notebook'], actions = map[Output = show_run]]
 
 view _versions_table[]
     v = versions
     if len[v] eq 0
         return p['no versions yet', color = 'muted', size = 's']
-    return table[v, key = 'version', hide = ['source'], actions = map[Restore = restore], confirm = map[Restore = 'Make the cell hold this version again?'], page = 10]
+    if len[v] gt 10
+        return table[v, key = 'version', hide = ['source'], actions = map[Restore = restore], confirm = map[Restore = 'Make the cell hold this version again?'], page = 10]
+    return table[v, key = 'version', hide = ['source'], actions = map[Restore = restore], confirm = map[Restore = 'Make the cell hold this version again?']]
 
 view _history[]
     return drawer[
@@ -597,9 +616,9 @@ view _naming[]
     return modal[
         stack[
             h2['New notebook'],
-            form[field['Name', new_name, type = 'text'], button['Create'], submit = create],
+            form[field['Name', new_name, type = 'text'], button['Create', class = 'primary'], submit = create],
             button['Cancel', click = close_naming, shortcut = 'escape'],
-            gap = 'm', pad = 'l'],
+            gap = 'm', pad = 'l', class = 'naming'],
         open = naming]
 
 view _first_page[]
@@ -622,9 +641,9 @@ view _body[]
         row[
             stack[items, row[button['+ cell', click = add_cell, tip = 'Add a cell at the end'], gap = 's'], gap = 'm', fill = 'true', class = 'cells'],
             _about[],
-            gap = 'm', align = 'start'],
-        _run_output[],
+            gap = 'm', align = 'start', below = 'tablet', becomes = 'stack'],
         _history[],
+        _run_output[],
         gap = 'm']
 
 fn _where[name]

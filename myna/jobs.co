@@ -131,7 +131,9 @@ view _runs[]
     r = runs
     if len[r] eq 0
         return p['No runs yet', color = 'muted', size = 's']
-    return table[r, key = 'run', actions = map[Output = show_run], page = 20, sort = true]
+    if len[r] gt 20
+        return table[r, key = 'run', actions = map[Output = show_run], page = 20, sort = true]
+    return table[r, key = 'run', actions = map[Output = show_run], sort = true]
 
 view _run_output[]
     return modal[
@@ -153,7 +155,7 @@ view _body[]
         gap = 'm']
 
 view render[]
-    return workbench.screen['Jobs', 'Jobs', a['New notebook', href = '/?naming=true'], _body[]]
+    return workbench.screen['Jobs', 'Jobs', workbench.new_notebook[], _body[]]
 
 --- the runs and the schedules of the workspace are listed, and a run's
 --- output opens
