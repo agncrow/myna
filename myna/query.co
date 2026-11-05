@@ -1,0 +1,369 @@
+--- Query: one of Magpie's reading verbs over a table of the workspace,
+--- asked as a form — latest rows, a summary grouped and reduced with a
+--- predicate, or a search of a text column — its answer as a table and,
+--- for a summary, as bars; saved by name in the workspace's _queries log,
+--- opened again from the list, and written as a notebook cell to go on in
+--- code. The query logic is myna/queries.co.
+use web, ui, frame, magpie
+use myna.workspace
+use myna.workbench
+use myna.queries
+
+--- the fields of the query being written
+tbl = ''
+verb = 'summary'
+by_text = ''
+of_text = ''
+how = 'sum'
+on_col = ''
+op = 'eq'
+value = ''
+words = ''
+column = ''
+k = '10'
+columns_text = ''
+save_name = ''
+--- the query last run and its answer: a frame, or why it could not be
+--- asked (the verbs run in a handler, since a summary and a search write
+--- the rows a log still holds in memory to its files first)
+asked = map[verb = '']
+result = frame.new[]
+problem = ''
+ran = 0
+--- the notebook the query was last written into
+made = ''
+
+derive tables
+    tick = now[]
+    return workspace.tables[]
+
+fn _shown_columns[name]
+    found = []
+    if name eq ''
+        return found
+    for c in workspace.table_columns[name]
+        if c ne '_pos'
+            found = push[found, c]
+    return found
+
+derive table_columns
+    tick = now[]
+    return _shown_columns[tbl]
+
+derive saved
+    seen = ran
+    tick = now[]
+    return workspace.saved_queries[]
+
+--- the form's fields as a query
+derive asking
+    return map[verb = verb, table = tbl, by = by_text, of = of_text, how = how, on = on_col, op = op, value = value, words = words, column = column, k = k, columns = columns_text]
+
+--- a query run: its answer kept, or why it could not be asked
+fn _run[q]
+    asked = q
+    ran = ran + 1
+    f = queries.answer[q]
+    if not f.ok
+        problem = f.reason
+        result = frame.new[]
+        return
+    problem = ''
+    result = f
+
+fn run_query[]
+    _run[asking]
+
+fn pick_verb[name]
+    verb = name
+
+fn save_query[]
+    name = trim[save_name]
+    if name eq ''
+        notice['Name the query to save it']
+        return
+    if trim[tbl] eq ''
+        notice['Pick a table first']
+        return
+    w = workspace.put_query[name, asking, str[now[]], true]
+    if not w.ok
+        notice['The query was not saved: `w.reason`']
+        return
+    ran = ran + 1
+    notice['Saved `name`']
+
+--- a saved query's fields put back in the form, and run
+fn open_query[name]
+    q = workspace.saved_query[name]
+    if queries.field_of[q, 'verb'] eq ''
+        notice['There is no saved query called `name`']
+        return
+    verb = queries.field_of[q, 'verb']
+    tbl = queries.field_of[q, 'table']
+    by_text = queries.field_of[q, 'by']
+    of_text = queries.field_of[q, 'of']
+    how = queries.field_of[q, 'how']
+    on_col = queries.field_of[q, 'on']
+    op = queries.field_of[q, 'op']
+    value = queries.field_of[q, 'value']
+    words = queries.field_of[q, 'words']
+    column = queries.field_of[q, 'column']
+    k = queries.field_of[q, 'k']
+    columns_text = queries.field_of[q, 'columns']
+    save_name = name
+    _run[q]
+
+fn delete_query[name]
+    w = workspace.put_query[name, map[verb = ''], str[now[]], false]
+    if not w.ok
+        notice['The query was not removed: `w.reason`']
+        return
+    ran = ran + 1
+    notice['Removed `name`; its versions stay in _queries']
+
+--- a name no notebook has: the one asked, or it with a number after it
+fn _free_name[base, taken]
+    name = base
+    n = 2
+    while name in taken
+        name = '`base` `n`'
+        n = n + 1
+    return name
+
+--- the query written as the first cell of a new notebook
+fn to_notebook[]
+    if trim[tbl] eq ''
+        notice['Pick a table first']
+        return
+    base = trim[save_name]
+    if base eq ''
+        base = '`tbl` query'
+    name = _free_name[base, workspace.names[]]
+    w = workspace.put_cell[name, 0, queries.code[asking], true, str[now[]]]
+    if not w.ok
+        notice['The notebook was not made: `w.reason`']
+        return
+    made = name
+    notice['Made the notebook `name`']
+
+view _verb_button[name, label]
+    if verb eq name
+        return button[label, click = pick_verb[name], class = 'primary']
+    return button[label, click = pick_verb[name]]
+
+view _labelled[label, child]
+    return stack[p[label, size = 'xs', class = 'qlabel'], child, gap = 'xs']
+
+view _columns_hint[]
+    cols = table_columns
+    if len[cols] eq 0
+        return p['pick a table to see its columns', color = 'muted', size = 's']
+    listed = join[cols, ', ']
+    return p['columns: `listed` · several columns go by commas · a search takes a prefix (kit*) or a fuzzy word (kitchn~)', color = 'muted', size = 's']
+
+view _verb_fields[]
+    cols = table_columns
+    choices = push[cols, '']
+    if verb eq 'summary'
+        return stack[
+            row[
+                field['Group by', by_text, type = 'text'],
+                field['Of', of_text, type = 'text'],
+                _labelled['How', select[['sum', 'count', 'mean', 'min', 'max', 'std', 'var', 'first', 'last'], how]],
+                gap = 'm', wrap = true, align = 'end'],
+            row[
+                _labelled['Where', select[choices, on_col]],
+                _labelled['is', select[['eq', 'ne', 'lt', 'le', 'gt', 'ge'], op]],
+                field['Value', value, type = 'text'],
+                gap = 'm', wrap = true, align = 'end'],
+            gap = 'm']
+    if verb eq 'search'
+        return row[
+            _labelled['Text column', select[choices, column]],
+            field['Words', words, type = 'text'],
+            field['Rows', k, type = 'text'],
+            gap = 'm', wrap = true, align = 'end']
+    return row[
+        field['Columns', columns_text, type = 'text'],
+        field['Rows', k, type = 'text'],
+        gap = 'm', wrap = true, align = 'end']
+
+view _form[]
+    return stack[
+        row[
+            _labelled['Table', select[push[tables, ''], tbl]],
+            _labelled['Verb', row[_verb_button['latest', 'Latest'], _verb_button['summary', 'Summary'], _verb_button['search', 'Search'], gap = 'xs']],
+            gap = 'm', wrap = true, align = 'end'],
+        _columns_hint[],
+        _verb_fields[],
+        row[
+            button['Run', click = run_query, class = 'primary', shortcut = 'ctrl+enter meta+enter', tip = 'Run the query (Ctrl+Enter)'],
+            button['Open as notebook', click = to_notebook, tip = 'Write the query as the first cell of a new notebook'],
+            gap = 's', wrap = true],
+        gap = 'm', pad = 'm', surface = 'card', border = true, class = 'qform']
+
+--- a number a cell holds, 0 where it holds none
+fn _number[c]
+    n = float[c]
+    if not n.ok
+        return 0.0
+    return n
+
+fn _cell_text[c]
+    s = str[c]
+    if not s.ok
+        return ''
+    return s
+
+fn _shown_number[v]
+    if v eq floor[v]
+        return '`int[v]`'
+    return '`round[v * 100.0] / 100.0`'
+
+--- a bar's length: its share of the largest, in fortieths (a class of
+--- css/app.css each, 6 pixels apart; a width the program computes as it
+--- runs is not taken by the layout, which takes the ones it is written)
+fn _bar_step[v, top]
+    if top lte 0.0 or v lte 0.0
+        return 0
+    n = int[round[v / top * 40.0]]
+    if n lt 1
+        return 1
+    if n gt 40
+        return 40
+    return n
+
+view _bar[label, v, top]
+    step = _bar_step[v, top]
+    return row[
+        p[label, size = 's', width = '140px', class = 'barlabel'],
+        stack[stack[class = 'bar w`step`'], width = '244px', class = 'bartrack'],
+        p[_shown_number[v], size = 's', font = 'mono', width = '90px', class = 'barvalue'],
+        gap = 's', align = 'center']
+
+--- a summary's first aggregate, a bar per group of its first column
+view _bars[f]
+    if queries.field_of[asked, 'verb'] ne 'summary'
+        return stack[]
+    by = queries.listed[queries.field_of[asked, 'by']]
+    of = queries.listed[queries.field_of[asked, 'of']]
+    if len[by] eq 0 or len[of] eq 0
+        return stack[]
+    if len[f] eq 0 or len[f] gt 40
+        return stack[]
+    label_col = by[0]
+    how_asked = queries.field_of[asked, 'how']
+    value_col = '`of[0]`_`how_asked`'
+    if label_col not in f.columns or value_col not in f.columns
+        return stack[]
+    labels = for c in f.`label_col`
+        _cell_text[c]
+    amounts = for c in f.`value_col`
+        _number[c]
+    top = 0.0
+    for v in amounts
+        if v gt top
+            top = v
+    bars = for i in range[len[labels]]
+        _bar[labels[i], amounts[i], top]
+    return stack[p['`value_col` by `label_col`', color = 'muted', size = 'xs', weight = 'bold'], bars, gap = 'xs']
+
+view _answer[]
+    if queries.field_of[asked, 'verb'] eq ''
+        return p['Pick a table and a verb, then Run', color = 'muted', size = 's']
+    if problem ne ''
+        return p[problem, color = 'down', size = 's']
+    f = result
+    rows = len[f]
+    said = queries.named[asked]
+    return stack[
+        row[h2['Answer'], p['`said` · `rows` rows', color = 'muted', size = 's'], gap = 's', align = 'center', wrap = true],
+        _bars[f],
+        table[f, hide = ['_pos'], sort = true],
+        gap = 'm', pad = 'm', surface = 'card', border = true, class = 'answer']
+
+view _made[]
+    if made eq ''
+        return stack[]
+    return row[p['The query is the first cell of', size = 's'], a[made, href = '/?current=`made`'], gap = 's', align = 'center']
+
+view _saved[]
+    s = saved
+    return stack[
+        h2['Saved queries'],
+        form[row[field['Name', save_name, type = 'text'], button['Save'], gap = 's', align = 'end'], submit = save_query],
+        _saved_list[s],
+        gap = 's', pad = 'm', surface = 'card', border = true]
+
+view _saved_list[s]
+    if len[s] eq 0
+        return p['none yet: name the query and Save', color = 'muted', size = 's']
+    return table[s, key = 'name', hide = ['at'], actions = map[Open = open_query, Remove = delete_query], confirm = map[Remove = 'Remove this saved query?']]
+
+view _body[]
+    return stack[
+        row[h1['Query'], p['ask a table with Magpie\'s verbs, save the question, take it into a notebook', color = 'muted', size = 's'], gap = 's', align = 'center', wrap = true],
+        _form[],
+        _made[],
+        _answer[],
+        _saved[],
+        gap = 'm', class = 'cells']
+
+fn _where[name]
+    if name eq ''
+        return 'Query'
+    return 'Query / `name`'
+
+view render[]
+    return workbench.screen['Query', _where[tbl], workbench.new_notebook[], _body[]]
+
+--- a summary is asked by the form, drawn as bars and a table, saved,
+--- opened again and written into a notebook
+test a_summary_is_asked_saved_and_made_a_notebook[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 2], shop = ['north', 'south', 'north']], by = ['item']]
+    a = app[render, wide = true]
+    change[a, 'tbl', 'orders']
+    click[a, pick_verb['summary']]
+    change[a, 'by_text', 'shop']
+    change[a, 'of_text', 'qty']
+    click[a, run_query]
+    shown = html[a]
+    assert['qty_sum by shop' in shown]
+    assert['north' in shown]
+    assert['>5<' in shown]
+    change[a, 'save_name', 'by shop']
+    click[a, save_query]
+    assert[len[saved] eq 1]
+    change[a, 'by_text', '']
+    click[a, open_query['by shop']]
+    assert[by_text eq 'shop']
+    click[a, to_notebook]
+    assert[made eq 'by shop']
+    assert[workspace.sources['by shop'] eq ['use magpie\nf = magpie.summary[\'orders\', [\'shop\'], [\'qty\'], [\'sum\']]\nlog[f]']]
+    click[a, delete_query['by shop']]
+    assert[len[saved] eq 0]
+    gone = rm[workspace.home[]]
+
+--- a search and the latest rows, and a query that cannot run says why
+test a_search_and_latest_rows_are_asked[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = magpie.batch[workspace.at['notes'], frame.new[id = [1, 2], body = ['the kitchen table', 'a garden chair']], by = ['id']]
+    a = app[render, wide = true]
+    click[a, run_query]
+    assert['Pick a table to ask' in html[a]]
+    change[a, 'tbl', 'notes']
+    click[a, pick_verb['search']]
+    change[a, 'column', 'body']
+    change[a, 'words', 'kitchen']
+    click[a, run_query]
+    assert['the kitchen table' in html[a]]
+    assert[not ('a garden chair' in html[a])]
+    click[a, pick_verb['latest']]
+    click[a, run_query]
+    assert['a garden chair' in html[a]]
+    gone = rm[workspace.home[]]

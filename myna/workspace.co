@@ -362,6 +362,81 @@ fn _setting[key, default]
 fn put_setting[key, value]
     return magpie.batch[_at['_settings'], frame.new[key = [key], value = [value]], by = ['key']]
 
+--- a table's folder in the workspace, as Magpie's verbs take it
+fn at[name]
+    return _at[name]
+
+--- a query's field, '' where the map lacks it
+fn _got[q, key]
+    if key not in q
+        return ''
+    return q[key]
+
+--- a saved query, keyed by its name: what it asks, as the Query page's
+--- fields hold it (each text); a query removed is written with live false
+fn put_query[name, q, at, live]
+    return magpie.batch[_at['_queries'], frame.new[name = [name], verb = [_got[q, 'verb']], table = [_got[q, 'table']], by = [_got[q, 'by']], of = [_got[q, 'of']], how = [_got[q, 'how']], on = [_got[q, 'on']], op = [_got[q, 'op']], value = [_got[q, 'value']], words = [_got[q, 'words']], column = [_got[q, 'column']], k = [_got[q, 'k']], columns = [_got[q, 'columns']], at = [at], live = [live]], by = ['name']]
+
+--- the saved queries, newest first: their names, what they ask and when
+--- they were saved
+fn saved_queries[]
+    empty = frame.new[name = [''], verb = [''], table = [''], at = ['']]
+    none = empty[empty.name eq 'none']
+    v = _saved_queries[]
+    if not v.ok
+        return none
+    return v
+
+fn _saved_queries[]
+    empty = frame.new[name = [''], verb = [''], table = [''], at = ['']]
+    none = empty[empty.name eq 'none']
+    if _empty[_at['_queries']]
+        return none
+    f = magpie.latest[_at['_queries']]
+    if not f.ok
+        return none
+    alive = f[f.live eq true]
+    if not alive.ok
+        return none
+    names = for c in alive.name
+        text_of[c]
+    verbs = for c in alive.verb
+        text_of[c]
+    tables = for c in alive.table
+        text_of[c]
+    ats = for c in alive.at
+        text_of[c]
+    shown = frame.new[name = names, verb = verbs, table = tables, at = ats]
+    return sort[shown, 'at', desc = true]
+
+--- one saved query's fields, as put_query took them; an empty map where
+--- no live query has the name
+fn saved_query[name]
+    v = _saved_query[name]
+    if not v.ok
+        return map[verb = '']
+    return v
+
+fn _saved_query[name]
+    found = map[verb = '']
+    if _empty[_at['_queries']]
+        return found
+    f = magpie.latest[_at['_queries']]
+    if not f.ok
+        return found
+    one = f[f.name eq name]
+    if not one.ok
+        return found
+    alive = one[one.live eq true]
+    if not alive.ok
+        return found
+    if len[alive] eq 0
+        return found
+    for key in ['verb', 'table', 'by', 'of', 'how', 'on', 'op', 'value', 'words', 'column', 'k', 'columns']
+        for c in alive.`key`
+            found = set[found, key, text_of[c]]
+    return found
+
 --- the tables in the workspace: every Magpie log under myna_data/, the
 --- workspace's own (an underscore first) after the notebooks' tables
 fn tables[]

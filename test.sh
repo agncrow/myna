@@ -11,12 +11,12 @@ set -euo pipefail
 crow="${1:-crow}"
 cd "$(dirname "$0")"
 export MYNA_DATA=test_data
-parts="myna/workspace.co myna/engine.co myna/notebooks.co myna/catalog.co myna/jobs.co myna/settings.co"
+parts="myna/workspace.co myna/engine.co myna/queries.co myna/query.co myna/notebooks.co myna/catalog.co myna/jobs.co myna/settings.co"
 for part in $parts; do
     echo "== $part"
     "$crow" test "$part"
 done
-for part in myna/notebooks.co myna/catalog.co myna/jobs.co myna/settings.co; do
+for part in myna/query.co myna/notebooks.co myna/catalog.co myna/jobs.co myna/settings.co; do
     echo "== $part, compiled"
     "$crow" test --compiled "$part"
 done

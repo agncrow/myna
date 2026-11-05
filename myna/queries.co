@@ -1,0 +1,195 @@
+--- A query over a table of the workspace, as the Query page asks it: one
+--- of Magpie's reading verbs with its options, every field text as the
+--- page's fields hold it (a map of text, keyed by the field). `answer`
+--- runs it, `code` writes it as the Crow a notebook cell runs, and `named`
+--- says it in a line. The saved queries are a log of the workspace
+--- (workspace.put_query); the page, and later the dashboards and Ask,
+--- read them through here.
+---
+--- The verbs: `latest` (the newest row of each key, the columns named or
+--- all), `summary` (grouped by columns and reduced, one aggregate over
+--- each column named, the rows a predicate admits) and `search` (the k
+--- rows whose text column best matches the words).
+use frame, magpie
+use myna.workspace
+
+--- a query's field, '' where the map lacks it
+fn field_of[q, key]
+    if key not in q
+        return ''
+    return trim[q[key]]
+
+--- text written as a list, its pieces split by commas, each trimmed, the
+--- empty ones left out
+fn listed[text]
+    found = []
+    for piece in split[text, ',']
+        t = trim[piece]
+        if t ne ''
+            found = push[found, t]
+    return found
+
+--- the words a search asks, split by spaces
+fn _words_of[text]
+    found = []
+    for piece in split[text, ' ']
+        t = trim[piece]
+        if t ne ''
+            found = push[found, t]
+    return found
+
+--- how many rows a search answers: 10 unless the field says another
+--- number from 1 to 1000
+fn rows_asked[text]
+    n = int[trim[text]]
+    if not n.ok
+        return 10
+    m = n
+    if m lt 1
+        m = 10
+    if m gt 1000
+        m = 1000
+    return m
+
+fn _hows[how, n]
+    found = []
+    for i in range[n]
+        found = push[found, how]
+    return found
+
+--- the predicate a summary takes: the column, the operator and the value,
+--- each a list of one, or three empty lists where no column is named
+fn _predicate[on, op, value]
+    if on eq ''
+        return [[], [], []]
+    return [[on], [op], [value]]
+
+--- what the query answers: a frame, or why it cannot be asked
+fn answer[q]
+    verb = field_of[q, 'verb']
+    table = field_of[q, 'table']
+    if table eq ''
+        return error['Pick a table to ask', 'myna']
+    dir = workspace.at[table]
+    if verb eq 'summary'
+        by = listed[field_of[q, 'by']]
+        of = listed[field_of[q, 'of']]
+        if len[of] eq 0
+            return error['Name a column to reduce (Of)', 'myna']
+        p = _predicate[field_of[q, 'on'], field_of[q, 'op'], field_of[q, 'value']]
+        return magpie.summary[dir, by, of, _hows[field_of[q, 'how'], len[of]], on = p[0], ops = p[1], equal = p[2]]
+    if verb eq 'search'
+        column = field_of[q, 'column']
+        if column eq ''
+            return error['Pick the text column to search', 'myna']
+        words = _words_of[field_of[q, 'words']]
+        if len[words] eq 0
+            return error['Write the words to search for', 'myna']
+        return magpie.search[dir, column, words, k = rows_asked[field_of[q, 'k']], snippet = 60]
+    if verb eq 'latest'
+        f = magpie.latest[dir, columns = listed[field_of[q, 'columns']]]
+        if not f.ok
+            return f
+        return head[f, rows_asked[field_of[q, 'k']]]
+    return error['A query is latest, summary or search, not `verb`', 'myna']
+
+--- text written as a Crow string literal
+fn quoted[text]
+    sq = '\''
+    bs = '\\'
+    inner = replace[replace[text, bs, '`bs``bs`'], sq, '`bs``sq`']
+    return '`sq``inner``sq`'
+
+fn _list_code[xs]
+    pieces = for x in xs
+        quoted[x]
+    joined = join[pieces, ', ']
+    return '[`joined`]'
+
+--- the query as the Crow a notebook cell runs: the table by its name,
+--- since a notebook runs in the workspace's folder
+fn code[q]
+    verb = field_of[q, 'verb']
+    t = quoted[field_of[q, 'table']]
+    if verb eq 'summary'
+        of = listed[field_of[q, 'of']]
+        by = _list_code[listed[field_of[q, 'by']]]
+        ofs = _list_code[of]
+        hows = _list_code[_hows[field_of[q, 'how'], len[of]]]
+        call = 'magpie.summary[`t`, `by`, `ofs`, `hows`'
+        on = field_of[q, 'on']
+        if on ne ''
+            ons = _list_code[[on]]
+            ops = _list_code[[field_of[q, 'op']]]
+            eqs = _list_code[[field_of[q, 'value']]]
+            call = '`call`, on = `ons`, ops = `ops`, equal = `eqs`'
+        return 'use magpie\nf = `call`]\nlog[f]'
+    if verb eq 'search'
+        col = quoted[field_of[q, 'column']]
+        words = _list_code[_words_of[field_of[q, 'words']]]
+        n = rows_asked[field_of[q, 'k']]
+        return 'use magpie\nf = magpie.search[`t`, `col`, `words`, k = `n`, snippet = 60]\nlog[f]'
+    cols = listed[field_of[q, 'columns']]
+    n = rows_asked[field_of[q, 'k']]
+    if len[cols] eq 0
+        return 'use magpie\nf = magpie.latest[`t`]\nlog[head[f, `n`]]'
+    named = _list_code[cols]
+    return 'use magpie\nf = magpie.latest[`t`, columns = `named`]\nlog[head[f, `n`]]'
+
+--- the query said in a line, for lists and titles
+fn named[q]
+    verb = field_of[q, 'verb']
+    table = field_of[q, 'table']
+    how = field_of[q, 'how']
+    of = field_of[q, 'of']
+    by = field_of[q, 'by']
+    on = field_of[q, 'on']
+    op = field_of[q, 'op']
+    value = field_of[q, 'value']
+    column = field_of[q, 'column']
+    words = field_of[q, 'words']
+    if verb eq 'summary'
+        said = '`how` of `of`'
+        if by ne ''
+            said = '`said` by `by`'
+        if on ne ''
+            said = '`said` where `on` `op` `value`'
+        return '`table`: `said`'
+    if verb eq 'search'
+        return '`table`: search `column` for `words`'
+    return '`table`: latest rows'
+
+--- a summary over a table a test wrote, its code and its line
+test a_summary_is_answered_and_written_as_code[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 2], shop = ['north', 'south', 'north']], by = ['item']]
+    q = map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum', on = '', op = 'eq', value = '']
+    f = answer[q]
+    assert[f.ok]
+    assert[len[f] eq 2]
+    assert['qty_sum' in f.columns]
+    assert[code[q] eq 'use magpie\nf = magpie.summary[\'orders\', [\'shop\'], [\'qty\'], [\'sum\']]\nlog[f]']
+    assert[named[q] eq 'orders: sum of qty by shop']
+    narrow = set[set[set[q, 'on', 'shop'], 'op', 'eq'], 'value', 'north']
+    g = answer[narrow]
+    assert[len[g] eq 1]
+    assert['on = [\'shop\'], ops = [\'eq\'], equal = [\'north\']' in code[narrow]]
+    latest = answer[map[verb = 'latest', table = 'orders', columns = 'qty', k = '2']]
+    assert[len[latest] eq 2]
+    gone = rm[workspace.home[]]
+
+--- a query that cannot be asked says why
+test a_query_without_its_fields_says_why[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples'], qty = [3]], by = ['item']]
+    assert[not answer[map[verb = 'summary', table = '']].ok]
+    assert[answer[map[verb = 'summary', table = '']].reason eq 'Pick a table to ask']
+    assert[answer[map[verb = 'summary', table = 'orders', of = '']].reason eq 'Name a column to reduce (Of)']
+    assert[quoted['it\'s'] eq '\'it\\\'s\'']
+    assert[listed[' a, ,b '] eq ['a', 'b']]
+    assert[rows_asked['x'] eq 10]
+    gone = rm[workspace.home[]]

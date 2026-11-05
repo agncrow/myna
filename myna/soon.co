@@ -14,9 +14,6 @@ view _soon[name, what, meanwhile]
             gap = 's', pad = 'l', surface = 'card', border = true, max_width = '640px'],
         gap = 'm']]
 
-view query[]
-    return _soon['Query', 'A query editor over the workspace\'s tables: Magpie\'s summary, latest and search as a form, a chart of the answer, and the query saved.', 'Meanwhile a notebook cell asks the same: magpie.summary[\'orders\', by = [\'item\'], of = [\'qty\'], how = [\'sum\']].']
-
 view dashboards[]
     return _soon['Dashboards', 'Charts and tables of notebooks\' answers on one page, refreshed by the scheduler.', 'Meanwhile a notebook\'s cells show their answers, and Jobs runs a notebook on a schedule.']
 

@@ -85,7 +85,7 @@ view _picked[]
         return p['Pick a table to see its rows', color = 'muted', size = 's']
     rows = preview
     return stack[
-        row[row[h2[name], p['`_rows_word[picked_count]` · newest version of each key', color = 'muted', size = 's'], gap = 's', align = 'center'], button['Close', click = unpick], justify = 'between', align = 'center'],
+        row[row[h2[name], p['`_rows_word[picked_count]` · newest version of each key', color = 'muted', size = 's'], gap = 's', align = 'center'], row[a['Query this table', href = '/query?tbl=`name`', class = 'button'], button['Close', click = unpick], gap = 's', align = 'center'], justify = 'between', align = 'center', wrap = true],
         _rows[rows],
         gap = 's', pad = 'm', surface = 'card', border = true]
 

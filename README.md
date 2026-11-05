@@ -5,9 +5,9 @@
 A workbench over [Magpie](https://github.com/agncrow/magpie), written in
 Crow: the catalog, queries, notebooks, dashboards, models, a model to ask
 and the jobs that run it all, every piece of its state a Magpie log. The
-notebooks, the catalog, the jobs and the settings are built. The query
-editor, the dashboards, the models and the model to ask are not yet, and
-their pages say so.
+notebooks, the queries, the catalog, the jobs and the settings are built.
+The dashboards, the models and the model to ask are not yet, and their
+pages say so.
 
 Myna needs Crow 0.8.0 or later and installs Magpie as any dependency.
 From this folder:
@@ -32,8 +32,17 @@ starts at once.
   cancels an edit. Every save is a version and every run is kept with its
   output: History lists both, opens a run's output and restores a
   version. A notebook can also run on a schedule.
+- **Query** (`/query`): one of Magpie's reading verbs over a table, asked
+  as a form: the latest rows (the columns named, or all), a summary
+  (grouped by columns, a column reduced by sum, count, mean, min, max,
+  std, var, first or last, the rows a predicate admits) or a search of a
+  text column (words, phrases, prefixes `kit*`, fuzzy words `kitchn~`).
+  The answer is a table and, for a summary, bars. A query is saved by
+  name in the workspace's `_queries` log and opened again from the list,
+  and Open as notebook writes it as the first cell of a new notebook.
 - **Catalog** (`/catalog`): the workspace's tables, each a Magpie log,
-  with their columns and their latest rows.
+  with their columns and their latest rows; Query this table opens the
+  query page on it.
 - **Jobs** (`/jobs`): the scheduler, the schedules and every run.
 - **Settings** (`/settings`): the workspace's name, and how long a run may
   take before it is stopped (60 seconds unless set).
@@ -54,7 +63,7 @@ rounds. `crow run scheduler.co` runs it without a page, until the file
 
 Everything Myna keeps is in `myna_data/` beside the program, each piece a
 Magpie log: `_notebooks` (every version of every cell), `_runs` (every
-run and its output), `_schedules`, `_settings`, and the tables the
+run and its output), `_queries`, `_schedules`, `_settings`, and the tables the
 notebooks write. `MYNA_DATA` names another folder. It must lie inside
 this checkout, where the programs a notebook runs find `crow_modules/`.
 
@@ -76,7 +85,10 @@ and remove a workspace of their own, `test_data/`, and refuse to run in
   its output back cell by cell.
 - `myna/workbench.co` is the frame every page shares: the sidebar, the
   top bar and the search.
-- `myna/notebooks.co`, `myna/catalog.co`, `myna/jobs.co` and
+- `myna/queries.co` runs a query, writes it as a cell's Crow and says
+  it in a line; the dashboards and Ask are to read saved queries through
+  it.
+- `myna/query.co`, `myna/notebooks.co`, `myna/catalog.co`, `myna/jobs.co` and
   `myna/settings.co` are the pages; `myna/soon.co` holds the pages not
   built yet.
 - `scheduler.co` is the scheduler.
