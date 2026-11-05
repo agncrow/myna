@@ -29,18 +29,14 @@ fn scratch[]
 
 --- a number the logs hold (an id, a position, seconds) as an int held in
 --- 64 bits: each lies far below 2^62, and `int` of a cell answers an int
---- that may grow (clamped by writes, which the width pass reads; an early
---- return bounds nothing)
+--- that may grow, which the bounds below keep in 64
 fn small[c]
     n = int[c]
     if not n.ok
         return 0
-    m = n
-    if m lt 0
-        m = 0
-    if m gt 4000000000000000000
-        m = 0
-    return m
+    if n lt 0 or n gt 4000000000000000000
+        return 0
+    return n
 
 --- a cell the logs hold as plain text. A log's cells are parsed values:
 --- one is read by a loop over its column (an index of the column, or `.ok`
@@ -334,7 +330,7 @@ fn due[name]
     t = moment[last]
     if not t.ok
         return ''
-    return str[t + float[gap]]
+    return str[t + gap]
 
 --- a setting, or its default where none was written
 fn setting[key, default]

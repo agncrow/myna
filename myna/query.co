@@ -220,24 +220,23 @@ fn _shown_number[v]
         return '`int[v]`'
     return '`round[v * 100.0] / 100.0`'
 
---- a bar's length: its share of the largest, in fortieths (a class of
---- css/app.css each, 6 pixels apart; a width the program computes as it
---- runs is not taken by the layout, which takes the ones it is written)
-fn _bar_step[v, top]
+--- a bar's length: its share of the largest, in hundredths of its track
+--- (at least one where the value is above nothing)
+fn _bar_share[v, top]
     if top lte 0.0 or v lte 0.0
         return 0
-    n = int[round[v / top * 40.0]]
+    n = int[round[v / top * 100.0]]
     if n lt 1
         return 1
-    if n gt 40
-        return 40
+    if n gt 100
+        return 100
     return n
 
 view _bar[label, v, top]
-    step = _bar_step[v, top]
+    share = _bar_share[v, top]
     return row[
         p[label, size = 's', width = '140px', class = 'barlabel'],
-        stack[stack[class = 'bar w`step`'], width = '244px', class = 'bartrack'],
+        stack[stack[width = '`share`%', class = 'bar'], width = '244px', class = 'bartrack'],
         p[_shown_number[v], size = 's', font = 'mono', width = '90px', class = 'barvalue'],
         gap = 's', align = 'center']
 

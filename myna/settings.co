@@ -43,7 +43,6 @@ fn save_settings[]
         notice['The settings were not saved: `a.reason`']
         return
     loaded = false
-    workbench.named = workbench.named + 1
     notice['Saved']
 
 view _form[]
@@ -88,5 +87,6 @@ test settings_are_kept[]
     assert['Research' in html[a]]
     assert[workbench.place_name eq 'Research']
     b = app[render, wide = true]
-    assert[workbench.place_name eq 'Research']
+    assert[b.place_name eq 'Research']
+    assert['Research' in html[b]]
     gone = rm[workspace.home[]]

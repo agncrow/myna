@@ -6,17 +6,12 @@ use web, ui
 use myna.workspace
 
 sought = ''
---- moved by a handler that saves the workspace's name (Settings): the
---- name is read from the settings log, a file no derivation follows, so
---- the reader who saved it sees it at once and every other reader at the
---- next refresh
-named = 0
 
 --- the workspace's name (Settings), and who is at the keyboard: Myna has
---- no sign-in yet, so the one reader is the account it runs as
+--- no sign-in yet, so the one reader is the account it runs as. The name
+--- is read from the settings log, a file: saving it moves the derivation
+--- for every reader at once
 derive place_name
-    seen = named
-    tick = now[]
     return workspace.setting['workspace', 'Myna']
 
 derive who

@@ -44,12 +44,11 @@ fn rows_asked[text]
     n = int[trim[text]]
     if not n.ok
         return 10
-    m = n
-    if m lt 1
-        m = 10
-    if m gt 1000
-        m = 1000
-    return m
+    if n lt 1
+        return 10
+    if n gt 1000
+        return 1000
+    return n
 
 fn _hows[how, n]
     found = []
@@ -185,7 +184,6 @@ test a_query_without_its_fields_says_why[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
     gone = rm[workspace.home[]]
     workspace.ready[]
-    w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples'], qty = [3]], by = ['item']]
     assert[not answer[map[verb = 'summary', table = '']].ok]
     assert[answer[map[verb = 'summary', table = '']].reason eq 'Pick a table to ask']
     assert[answer[map[verb = 'summary', table = 'orders', of = '']].reason eq 'Name a column to reduce (Of)']
