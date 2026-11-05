@@ -1,0 +1,3 @@
+/* the shell: the sidebar's links are text, not underlined */
+.side a { color: var(--crow-text); text-decoration: none; }
+.side a[aria-current="page"] { font-weight: 600; }

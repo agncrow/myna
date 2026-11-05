@@ -78,9 +78,20 @@ derive notebooks
     seen = written
     return _names[]
 
+fn _shown[chosen, names]
+    if chosen ne ''
+        return chosen
+    if len[names] eq 0
+        return ''
+    return names[0]
+
+derive shown
+    seen = written
+    return _shown[current, _names[]]
+
 derive cells
     seen = written
-    return _sources[current]
+    return _sources[_shown[current, _names[]]]
 
 fn reload[]
     written = written + 1
@@ -107,14 +118,14 @@ fn new_notebook[]
 
 fn add_cell[]
     n = len[cells]
-    _store[current, n, '', true]
+    _store[shown, n, '', true]
     written = written + 1
     editing = n
     draft = ''
 
 fn delete_cell[i]
     held = cells
-    _store[current, i, held[i], false]
+    _store[shown, i, held[i], false]
     written = written + 1
     editing = -1
     outputs = _blank[0]
@@ -127,7 +138,7 @@ fn edit[i]
 fn save[]
     if editing lt 0
         return
-    _store[current, editing, draft, true]
+    _store[shown, editing, draft, true]
     written = written + 1
     editing = -1
 
@@ -148,11 +159,11 @@ fn run_all[]
     src = join[parts, '\n']
     if not exists['.myna']
         made = mkdir['.myna']
-    wrote = write['.myna/`current`.co', src]
+    wrote = write['.myna/`shown`.co', src]
     if not wrote.ok
         notice[wrote.reason]
         return
-    r = shell['perl -e \'alarm shift; exec @ARGV\' 60 crow run -i .myna/`current`.co 2>&1']
+    r = shell['perl -e \'alarm shift; exec @ARGV\' 60 crow run -i .myna/`shown`.co 2>&1']
     if not r.ok
         notice[r.reason]
         return
@@ -177,49 +188,103 @@ view output_view[i]
         return p['no output yet', color = 'muted', size = 's']
     if outputs[i] eq ''
         return p['no output yet', color = 'muted', size = 's']
-    return pre[outputs[i], font = 'mono']
+    return stack[pre[outputs[i], font = 'mono', size = 's'], background = 'bg', pad = 's', radius = 's']
 
 view source_view[i]
     held = cells
     if held[i] eq ''
         return p['empty cell', color = 'muted', size = 's']
-    return pre[held[i], font = 'mono']
+    return pre[held[i], font = 'mono', size = 's']
+
+view cell_head[i, status]
+    return row[
+        p['[`i`]', font = 'mono', color = 'muted', size = 's'],
+        p[status, color = 'up', size = 's', weight = 'bold'],
+        p[ran, color = 'muted', size = 's'],
+        gap = 's', align = 'center']
 
 view cell_view[i]
     if i eq editing
         return stack[
-            field['cell `i`', draft, lines = 8],
-            row[button['Save', click = save], button['Cancel', click = cancel], button['Delete', click = delete_cell[i]], gap = 's'],
+            row[cell_head[i, 'editing'], row[button['Save', click = save], button['Cancel', click = cancel], button['Delete', click = delete_cell[i]], gap = 's'], justify = 'between', align = 'center'],
+            field['', draft, lines = 8],
             output_view[i],
-            gap = 's', pad = 'm', surface = 'card']
+            gap = 's', pad = 'm', surface = 'card', border = true]
     return stack[
-        row[p['cell `i`', color = 'muted', size = 's'], button['Edit', click = edit[i]], gap = 's', justify = 'between'],
+        row[cell_head[i, 'ok'], row[button['Edit', click = edit[i]], button['Run', click = run_all], gap = 's'], justify = 'between', align = 'center'],
         source_view[i],
         output_view[i],
-        gap = 's', pad = 'm', surface = 'card']
+        gap = 's', pad = 'm', surface = 'card', border = true]
+
+view mark[]
+    return row[
+        p['"', color = 'accent', weight = 'bold', font = 'mono'],
+        p['(o.o)', weight = 'bold', font = 'mono'],
+        p['"', color = 'accent', weight = 'bold', font = 'mono'],
+        gap = 'xs', align = 'center']
+
+view side_link[name, icon_name, href, on]
+    if on
+        return a[row[icon[icon_name], name, gap = 's', align = 'center'], href = href, surface = 'card', border = true, pad = 's', radius = 'm', weight = 'bold']
+    return a[row[icon[icon_name], name, gap = 's', align = 'center'], href = href, pad = 's', radius = 'm']
 
 view sidebar[]
+    return stack[
+        row[mark[], stack[p['Myna', weight = 'bold'], p['[WORKSPACE NAME]', color = 'muted', size = 'xs'], gap = 'xs'], gap = 's', align = 'center'],
+        side_link['Catalog', 'table', '/catalog', false],
+        side_link['Query', 'search', '/query', false],
+        side_link['Notebooks', 'edit', '/', true],
+        side_link['Dashboards', 'chart', '/dashboards', false],
+        side_link['Models', 'settings', '/models', false],
+        side_link['Ask', 'mail', '/ask', false],
+        side_link['Jobs', 'clock', '/jobs', false],
+        divider[],
+        side_link['Settings', 'settings', '/settings', false],
+        row[icon['user'], p['vijay · owner', color = 'muted', size = 'xs'], gap = 's', align = 'center'],
+        gap = 'xs', pad = 'm', width = '236px', background = 'surface', class = 'side']
+
+view notebook_list[]
     links = for n in notebooks
         button[n, click = open_notebook[n]]
+    return row[
+        p['Notebooks', color = 'muted', size = 's', weight = 'bold'],
+        row[links, gap = 's', wrap = true],
+        row[field['', new_name, type = 'text'], button['Create', click = new_notebook], button['Reload', click = reload], gap = 's', align = 'center'],
+        gap = 'm', align = 'center', justify = 'between', wrap = true]
+
+view about[]
+    held = cells
     return stack[
-        h2['Notebooks'],
-        links,
-        field['New notebook', new_name, type = 'text'],
-        row[button['Create', click = new_notebook], button['Reload', click = reload], gap = 's'],
-        gap = 's', pad = 'm', width = '240px']
+        h2['This notebook'],
+        p['Cells `len[held]`', size = 's'],
+        p['Saved in the log myna_data/notebooks: every save a batch, latest the notebook', color = 'muted', size = 's'],
+        p['Last run `ran`', color = 'muted', size = 's'],
+        p['Runs as one program by the crow on the PATH, each cell behind a marker', color = 'muted', size = 's'],
+        gap = 's', pad = 'm', surface = 'card', border = true, width = '280px']
 
 view notebook[]
-    if current eq ''
-        return stack[h1['Myna'], p['Create a notebook to begin: cells of Crow, run top to bottom, every save kept in a Magpie log.'], gap = 's', pad = 'm']
+    name = shown
+    if name eq ''
+        return stack[notebook_list[], p['Create a notebook to begin: cells of Crow, run top to bottom, every save kept in a Magpie log.', color = 'muted'], gap = 'm']
     items = for i in range[len[cells]]
         cell_view[i]
     return stack[
-        row[h1[current], button['Run all', click = run_all], button['Add cell', click = add_cell], p[ran, color = 'muted', size = 's'], gap = 'm', align = 'center'],
-        items,
-        gap = 'm', pad = 'm']
+        notebook_list[],
+        row[row[h1[name], p['notebook', color = 'muted', size = 'xs'], gap = 's', align = 'center'], row[button['Run all', click = run_all], button['Add cell', click = add_cell], gap = 's'], justify = 'between', align = 'center'],
+        row[stack[items, gap = 'm', fill = 'true'], about[], gap = 'm', align = 'start'],
+        gap = 'm']
+
+view topbar[]
+    return row[
+        p['Workspace / Notebooks / `shown`', color = 'muted', size = 'xs'],
+        row[button['New', click = add_cell], gap = 's'],
+        justify = 'between', align = 'center']
 
 view render[]
-    return row[sidebar[], notebook[], gap = 'l', align = 'start', pad = 'm']
+    return row[
+        sidebar[],
+        stack[topbar[], divider[], notebook[], gap = 'm', pad = 'm', fill = 'true'],
+        gap = 'none', align = 'start']
 
 --- a notebook is made, its cells written and run, and what each printed
 --- shows under it; the notebook comes back from the log on reload
@@ -259,5 +324,5 @@ test a_refused_cell_shows_the_refusal[]
 
 _ready[]
 
-serve[3800]
+serve[3800, wide = true]
 page['/', render]
