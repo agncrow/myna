@@ -1,0 +1,5 @@
+--- Myna: a workbench over Magpie, written in Crow. `crow run` serves it on
+--- port 3800; `crow test main.co` runs its blocks. Its logs live under
+--- myna_data/ beside the program.
+name = 'myna'
+deps = map[magpie = 'github.com/agncrow/magpie/packages/magpie@v0.1.1']

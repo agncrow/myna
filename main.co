@@ -1,0 +1,263 @@
+--- Myna: a workbench over Magpie, written in Crow. The first page is the
+--- notebook: cells of Crow, run top to bottom as one program by the crow
+--- on the PATH, each cell's output shown under it; every save a batch in
+--- the notebooks log (myna_data/notebooks), so a notebook's history is
+--- its log. `crow run main.co` serves it on port 3800.
+use web, ui, frame, magpie
+
+written = 0
+current = ''
+outputs = []
+editing = -1
+draft = ''
+new_name = ''
+ran = ''
+
+fn _log[]
+    return 'myna_data/notebooks'
+
+fn _ready[]
+    if not exists['myna_data']
+        made = mkdir['myna_data']
+    if not exists[_log[]]
+        made = mkdir[_log[]]
+
+--- the notebooks log holds one row per cell, keyed by notebook and cell;
+--- a deleted cell is a row whose `live` is false, and `latest` answers
+--- the newest version of every cell
+fn _empty[]
+    h = magpie.head[_log[]]
+    if not h.ok
+        return true
+    return h lt 0
+
+fn _names[]
+    seen = map[]
+    if _empty[]
+        return sort[keys[seen]]
+    f = magpie.latest[_log[]]
+    if f.ok
+        for n in f.notebook
+            seen = set[seen, str[n], true]
+    return sort[keys[seen]]
+
+fn _sources[name]
+    found = []
+    if _empty[]
+        return found
+    f = magpie.latest[_log[]]
+    if not f.ok
+        return found
+    mine = f[f.notebook eq name]
+    if not mine.ok
+        return found
+    live = mine[mine.live eq true]
+    if not live.ok
+        return found
+    ordered = sort[live, 'cell']
+    if not ordered.ok
+        return found
+    found = for s in ordered.source
+        str[s]
+    return found
+
+fn _blank[n]
+    outs = []
+    for i in range[n]
+        outs = push[outs, '']
+    return outs
+
+fn _store[name, i, source, live]
+    wrote = magpie.batch[_log[], frame.new[notebook = [name], cell = [i], source = [source], live = [live]], by = ['notebook', 'cell']]
+    if not wrote.ok
+        notice[wrote.reason]
+
+--- the notebooks and the open notebook's cells are read from the log,
+--- again after every write
+derive notebooks
+    seen = written
+    return _names[]
+
+derive cells
+    seen = written
+    return _sources[current]
+
+fn reload[]
+    written = written + 1
+
+fn open_notebook[name]
+    current = name
+    editing = -1
+    outputs = _blank[0]
+
+fn new_notebook[]
+    name = trim[new_name]
+    if name eq ''
+        notice['name the notebook']
+        return
+    if name in notebooks
+        notice['`name` exists']
+        return
+    _store[name, 0, '', true]
+    new_name = ''
+    written = written + 1
+    open_notebook[name]
+    editing = 0
+    draft = ''
+
+fn add_cell[]
+    n = len[cells]
+    _store[current, n, '', true]
+    written = written + 1
+    editing = n
+    draft = ''
+
+fn delete_cell[i]
+    held = cells
+    _store[current, i, held[i], false]
+    written = written + 1
+    editing = -1
+    outputs = _blank[0]
+
+fn edit[i]
+    held = cells
+    editing = i
+    draft = held[i]
+
+fn save[]
+    if editing lt 0
+        return
+    _store[current, editing, draft, true]
+    written = written + 1
+    editing = -1
+
+fn cancel[]
+    editing = -1
+
+--- every cell in order as one program, each cell behind a marker line,
+--- run by the crow on the PATH with a limit of sixty seconds; a refusal
+--- (no marker reached) is shown under the first cell
+fn run_all[]
+    if editing gte 0
+        save[]
+    parts = []
+    held = cells
+    for i in range[len[held]]
+        parts = push[parts, 'log[\'@@cell `i`\']']
+        parts = push[parts, held[i]]
+    src = join[parts, '\n']
+    if not exists['.myna']
+        made = mkdir['.myna']
+    wrote = write['.myna/`current`.co', src]
+    if not wrote.ok
+        notice[wrote.reason]
+        return
+    r = shell['perl -e \'alarm shift; exec @ARGV\' 60 crow run -i .myna/`current`.co 2>&1']
+    if not r.ok
+        notice[r.reason]
+        return
+    outs = []
+    for i in range[len[cells]]
+        outs = push[outs, '']
+    pieces = split[r.stdout, '@@cell ']
+    if len[pieces] eq 1 and len[outs] gt 0
+        outs[0] = trim[r.stdout]
+    for p in pieces
+        if p ne ''
+            lines = split[p, '\n']
+            n = int[lines[0]]
+            if n.ok
+                rest = slice[lines, 1, len[lines]]
+                outs[n] = trim[join[rest, '\n']]
+    outputs = outs
+    ran = 'exit `r.status`'
+
+view output_view[i]
+    if i gte len[outputs]
+        return p['no output yet', color = 'muted', size = 's']
+    if outputs[i] eq ''
+        return p['no output yet', color = 'muted', size = 's']
+    return pre[outputs[i], font = 'mono']
+
+view source_view[i]
+    held = cells
+    if held[i] eq ''
+        return p['empty cell', color = 'muted', size = 's']
+    return pre[held[i], font = 'mono']
+
+view cell_view[i]
+    if i eq editing
+        return stack[
+            field['cell `i`', draft, lines = 8],
+            row[button['Save', click = save], button['Cancel', click = cancel], button['Delete', click = delete_cell[i]], gap = 's'],
+            output_view[i],
+            gap = 's', pad = 'm', surface = 'card']
+    return stack[
+        row[p['cell `i`', color = 'muted', size = 's'], button['Edit', click = edit[i]], gap = 's', justify = 'between'],
+        source_view[i],
+        output_view[i],
+        gap = 's', pad = 'm', surface = 'card']
+
+view sidebar[]
+    links = for n in notebooks
+        button[n, click = open_notebook[n]]
+    return stack[
+        h2['Notebooks'],
+        links,
+        field['New notebook', new_name, type = 'text'],
+        row[button['Create', click = new_notebook], button['Reload', click = reload], gap = 's'],
+        gap = 's', pad = 'm', width = '240px']
+
+view notebook[]
+    if current eq ''
+        return stack[h1['Myna'], p['Create a notebook to begin: cells of Crow, run top to bottom, every save kept in a Magpie log.'], gap = 's', pad = 'm']
+    items = for i in range[len[cells]]
+        cell_view[i]
+    return stack[
+        row[h1[current], button['Run all', click = run_all], button['Add cell', click = add_cell], p[ran, color = 'muted', size = 's'], gap = 'm', align = 'center'],
+        items,
+        gap = 'm', pad = 'm']
+
+view render[]
+    return row[sidebar[], notebook[], gap = 'l', align = 'start', pad = 'm']
+
+--- a notebook is made, its cells written and run, and what each printed
+--- shows under it; the notebook comes back from the log on reload
+test a_notebook_runs_its_cells[]
+    gone = rm['myna_data']
+    _ready[]
+    a = app[render]
+    change[a, 'new_name', 'scratch']
+    click[a, new_notebook]
+    change[a, 'draft', 'use math\nxs = [1, 2, 3]\nlog[sum[xs]]']
+    click[a, save]
+    click[a, add_cell]
+    change[a, 'draft', 'log[len[xs] * 100]']
+    click[a, save]
+    click[a, run_all]
+    assert['>6<' in html[a]]
+    assert['>300<' in html[a]]
+    click[a, reload]
+    assert[notebooks eq ['scratch']]
+    held = cells
+    assert[len[held] eq 2]
+    assert['log[len[xs] * 100]' in held[1]]
+    gone = rm['myna_data']
+
+--- a refusal shows under the first cell
+test a_refused_cell_shows_the_refusal[]
+    gone = rm['myna_data']
+    _ready[]
+    a = app[render]
+    change[a, 'new_name', 'broken']
+    click[a, new_notebook]
+    change[a, 'draft', 'log[nosuch[1]]']
+    click[a, save]
+    click[a, run_all]
+    assert['undefined function' in html[a]]
+    gone = rm['myna_data']
+
+_ready[]
+
+serve[3800]
+page['/', render]

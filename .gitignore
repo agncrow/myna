@@ -1,0 +1,15 @@
+# what crow builds and keeps beside a program
+.crow_build/
+target/
+**/.crow/
+# the logs a run writes, and the programs a notebook runs
+myna_data/
+.myna/
+*.csv
+*.txt
+*.json
+# the OS and editors
+.DS_Store
+*.swp
+*~
+__pycache__/
