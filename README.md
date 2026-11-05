@@ -5,9 +5,9 @@
 A workbench over [Magpie](https://github.com/agncrow/magpie), written in
 Crow: the catalog, queries, notebooks, dashboards, models, a model to ask
 and the jobs that run it all, every piece of its state a Magpie log. The
-notebooks, the queries, the catalog, the jobs and the settings are built.
-The dashboards, the models and the model to ask are not yet, and their
-pages say so.
+notebooks, the queries, the catalog, the dashboards, the jobs and the
+settings are built. The models and the model to ask are not yet, and
+their pages say so.
 
 Myna needs Crow 0.8.0 or later and installs Magpie as any dependency.
 From this folder:
@@ -43,6 +43,13 @@ starts at once.
 - **Catalog** (`/catalog`): the workspace's tables, each a Magpie log,
   with their columns and their latest rows; Query this table opens the
   query page on it.
+- **Dashboards** (`/dashboards`): saved queries side by side as tiles,
+  each drawn as bars, a number or a table. A query is added from the
+  dashboard or pinned from the Query page; tiles are moved and removed in
+  place. Refresh now asks every tile's query again, and a dashboard given
+  an interval (1 min, 15 min, 1 h, 1 d) is refreshed by the scheduler.
+  Each tile's answer is kept as a Parquet file under `.tiles/`, so a
+  dashboard opens without asking its queries.
 - **Jobs** (`/jobs`): the scheduler, the schedules and every run.
 - **Settings** (`/settings`): the workspace's name, and how long a run may
   take before it is stopped (60 seconds unless set).
@@ -86,9 +93,11 @@ and remove a workspace of their own, `test_data/`, and refuse to run in
 - `myna/workbench.co` is the frame every page shares: the sidebar, the
   top bar and the search.
 - `myna/queries.co` runs a query, writes it as a cell's Crow and says
-  it in a line; the dashboards and Ask are to read saved queries through
-  it.
-- `myna/query.co`, `myna/notebooks.co`, `myna/catalog.co`, `myna/jobs.co` and
+  it in a line; the dashboards read saved queries through it, as Ask
+  is to.
+- `myna/tiles.co` refreshes a dashboard's tiles and says when one is due.
+- `myna/query.co`, `myna/notebooks.co`, `myna/catalog.co`,
+  `myna/dashboards.co`, `myna/jobs.co` and
   `myna/settings.co` are the pages; `myna/soon.co` holds the pages not
   built yet.
 - `scheduler.co` is the scheduler.

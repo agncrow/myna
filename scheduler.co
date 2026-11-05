@@ -1,6 +1,7 @@
 --- Myna's scheduler: every fifteen seconds it runs the notebooks whose
 --- schedules are due, as the notebook page runs them (myna/engine.co), and
---- writes each run to the runs log as the schedule's. `crow run
+--- writes each run to the runs log as the schedule's; and it refreshes the
+--- dashboards that are due (myna/tiles.co). `crow run
 --- scheduler.co` runs it until it is stopped; the Jobs page starts it
 --- with the page's port (`crow run -i scheduler.co 3800`), and then it
 --- also ends once the page has not answered for three rounds. Either way
@@ -9,6 +10,7 @@
 --- the moment of each round to _scheduler.beat there.
 use myna.workspace
 use myna.engine
+use myna.tiles
 
 fn _seconds[written_as]
     n = int[written_as]
@@ -60,6 +62,9 @@ fn _round[limit]
             if t.ok
                 if t lte now[]
                     log['`str[now[]]` `name`: `_run_one[name, limit]`']
+    for dash in workspace.dashboards[]
+        if tiles.due[dash]
+            log['`str[now[]]` dashboard `dash`: `tiles.refresh[dash]` tiles refreshed']
 
 --- whether the page that started the scheduler still answers (any answer
 --- does, a 404 too)

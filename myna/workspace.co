@@ -433,6 +433,158 @@ fn _saved_query[name]
             found = set[found, key, text_of[c]]
     return found
 
+--- a dashboard, or one of its tiles, written to the _dashboards log keyed
+--- by the dashboard and the tile: tile 0 is the dashboard itself (every
+--- how many seconds the scheduler refreshes it, 0 never), 1 and on its
+--- tiles (the saved query each shows, drawn as bars, a number or a table,
+--- its title and its place); a removed one is written with live false
+fn put_tile[dash, tile, query, draw, title, place, every, live, at]
+    return magpie.batch[_at['_dashboards'], frame.new[dashboard = [dash], tile = [tile], query = [query], draw = [draw], title = [title], place = [place], every = [every], live = [live], at = [at]], by = ['dashboard', 'tile']]
+
+--- the dashboards, by name
+fn dashboards[]
+    v = _dashboards[]
+    if not v.ok
+        return []
+    return v
+
+fn _dashboards[]
+    found = []
+    if _empty[_at['_dashboards']]
+        return found
+    f = magpie.latest[_at['_dashboards']]
+    if not f.ok
+        return found
+    heads = f[f.tile eq 0]
+    if not heads.ok
+        return found
+    alive = heads[heads.live eq true]
+    if not alive.ok
+        return found
+    found = for n in alive.dashboard
+        text_of[n]
+    return sort[found]
+
+--- a dashboard's tiles in their places: the tile's id, the saved query it
+--- shows, how it is drawn, its title and its place
+fn board_tiles[dash]
+    empty = frame.new[tile = [0], query = [''], draw = [''], title = [''], place = [0]]
+    none = empty[empty.tile lt 0]
+    v = _board_tiles[dash]
+    if not v.ok
+        return none
+    return v
+
+fn _board_tiles[dash]
+    empty = frame.new[tile = [0], query = [''], draw = [''], title = [''], place = [0]]
+    none = empty[empty.tile lt 0]
+    if _empty[_at['_dashboards']]
+        return none
+    f = magpie.latest[_at['_dashboards']]
+    if not f.ok
+        return none
+    mine = f[f.dashboard eq dash]
+    if not mine.ok
+        return none
+    alive = mine[mine.live eq true]
+    if not alive.ok
+        return none
+    tiles = alive[alive.tile gt 0]
+    if not tiles.ok
+        return none
+    ids = for c in tiles.tile
+        small[c]
+    asked = for c in tiles.query
+        text_of[c]
+    draws = for c in tiles.draw
+        text_of[c]
+    titles = for c in tiles.title
+        text_of[c]
+    places = for c in tiles.place
+        small[c]
+    shown = frame.new[tile = ids, query = asked, draw = draws, title = titles, place = places]
+    return sort[shown, 'place']
+
+--- every how many seconds a dashboard is refreshed by the scheduler, 0
+--- where it is not
+fn board_every[dash]
+    v = _board_every[dash]
+    if not v.ok
+        return 0
+    return v
+
+fn _board_every[dash]
+    if _empty[_at['_dashboards']]
+        return 0
+    f = magpie.latest[_at['_dashboards']]
+    if not f.ok
+        return 0
+    mine = f[f.dashboard eq dash]
+    if not mine.ok
+        return 0
+    head_row = mine[mine.tile eq 0]
+    if not head_row.ok
+        return 0
+    found = 0
+    for c in head_row.every
+        found = small[c]
+    return found
+
+--- the id a new tile takes: one past every tile any dashboard ever held,
+--- so a tile's kept answer is never another's
+fn next_tile[]
+    top = 0
+    if _empty[_at['_dashboards']]
+        return 1
+    f = magpie.latest[_at['_dashboards']]
+    if not f.ok
+        return 1
+    for c in f.tile
+        if small[c] gt top
+            top = small[c]
+    return top + 1
+
+--- where a tile's last answer is kept: a Parquet file beside the logs
+--- (a folder whose name begins with a dot is no table)
+fn tiles_dir[]
+    return _at['.tiles']
+
+fn tile_file[tile]
+    return '`tiles_dir[]`/`tile`.parquet'
+
+--- a tile's last refresh written to the _tiles log: when, why it has no
+--- answer ('' where it has one) and how many rows the answer had
+fn put_tile_answer[tile, at, problem, rows]
+    return magpie.batch[_at['_tiles'], frame.new[tile = [tile], at = [at], problem = [problem], rows = [rows]], by = ['tile']]
+
+--- every tile's last refresh: its id, when, why it has no answer, and
+--- how many rows the answer had
+fn tile_answers[]
+    empty = frame.new[tile = [0], at = [''], problem = [''], rows = [0]]
+    none = empty[empty.tile lt 0]
+    v = _tile_answers[]
+    if not v.ok
+        return none
+    return v
+
+fn _tile_answers[]
+    empty = frame.new[tile = [0], at = [''], problem = [''], rows = [0]]
+    none = empty[empty.tile lt 0]
+    if _empty[_at['_tiles']]
+        return none
+    f = magpie.latest[_at['_tiles']]
+    if not f.ok
+        return none
+    ids = for c in f.tile
+        small[c]
+    ats = for c in f.at
+        text_of[c]
+    problems = for c in f.problem
+        text_of[c]
+    counts = for c in f.rows
+        small[c]
+    return frame.new[tile = ids, at = ats, problem = problems, rows = counts]
+
 --- the tables in the workspace: every Magpie log under myna_data/, the
 --- workspace's own (an underscore first) after the notebooks' tables
 fn tables[]

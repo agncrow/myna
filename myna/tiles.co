@@ -1,0 +1,178 @@
+--- A dashboard's tiles refreshed: each tile's saved query asked again
+--- (myna/queries.co), its answer kept as a Parquet file beside the logs
+--- and its refresh written to the _tiles log, whether the page's Refresh
+--- asks or the scheduler does. A dashboard is due when it is refreshed
+--- every so many seconds and a tile's answer is older than that, or was
+--- never made. The page reads the kept answers; it never asks a query
+--- while it draws, since a summary or a search first writes the rows a
+--- log still holds in memory to its files.
+use frame, magpie
+use myna.workspace
+use myna.queries
+
+--- one tile's saved query asked, its answer kept, and the refresh
+--- written; answers the _tiles log's position
+fn refresh_tile[tile, name]
+    at = str[now[]]
+    q = workspace.saved_query[name]
+    if queries.field_of[q, 'verb'] eq ''
+        return workspace.put_tile_answer[tile, at, 'There is no saved query called `name`', 0]
+    f = queries.answer[q]
+    if not f.ok
+        return workspace.put_tile_answer[tile, at, f.reason, 0]
+    if not exists[workspace.tiles_dir[]]
+        made = mkdir[workspace.tiles_dir[]]
+    saved = frame.save[head[f, 1000], workspace.tile_file[tile]]
+    if not saved.ok
+        return workspace.put_tile_answer[tile, at, 'The answer was not kept: `saved.reason`', 0]
+    return workspace.put_tile_answer[tile, at, '', len[f]]
+
+--- every tile of a dashboard refreshed; answers how many
+fn refresh[dash]
+    t = workspace.board_tiles[dash]
+    ids = for c in t.tile
+        workspace.small[c]
+    names = for c in t.query
+        workspace.text_of[c]
+    done = 0
+    for i in range[len[ids]]
+        r = refresh_tile[ids[i], names[i]]
+        done = done + 1
+    return done
+
+--- the place after a dashboard's last tile
+fn _last_place[dash]
+    top = 0
+    t = workspace.board_tiles[dash]
+    for c in t.place
+        if workspace.small[c] gt top
+            top = workspace.small[c]
+    return top
+
+--- a dashboard made, refreshed by the scheduler every so many seconds (0,
+--- never)
+fn make_board[dash, every]
+    return workspace.put_tile[dash, 0, '', '', '', 0, every, true, str[now[]]]
+
+--- a dashboard removed: its tiles go with it, their versions kept
+fn remove_board[dash]
+    return workspace.put_tile[dash, 0, '', '', '', 0, 0, false, str[now[]]]
+
+--- every how many seconds the scheduler refreshes the dashboard
+fn set_every[dash, every]
+    return workspace.put_tile[dash, 0, '', '', '', 0, every, true, str[now[]]]
+
+--- a saved query added to a dashboard as its last tile, drawn as bars, a
+--- number or a table, and refreshed: answers the tile's id
+fn add_tile[dash, name, draw, title]
+    tile = workspace.next_tile[]
+    w = workspace.put_tile[dash, tile, name, draw, title, _last_place[dash] + 1, 0, true, str[now[]]]
+    if not w.ok
+        return w
+    r = refresh_tile[tile, name]
+    return tile
+
+--- a tile taken off its dashboard
+fn remove_tile[dash, tile]
+    return workspace.put_tile[dash, tile, '', '', '', 0, 0, false, str[now[]]]
+
+--- a tile moved a place earlier (step -1) or later (1), trading places
+--- with its neighbour; answers 1, or 0 where it is already at that end
+fn move_tile[dash, tile, step]
+    t = workspace.board_tiles[dash]
+    ids = for c in t.tile
+        workspace.small[c]
+    asked = for c in t.query
+        workspace.text_of[c]
+    draws = for c in t.draw
+        workspace.text_of[c]
+    titles = for c in t.title
+        workspace.text_of[c]
+    places = for c in t.place
+        workspace.small[c]
+    i = -1
+    for k in range[len[ids]]
+        if ids[k] eq tile
+            i = k
+    if i lt 0
+        return 0
+    j = i + step
+    if j lt 0 or j gte len[ids]
+        return 0
+    at = str[now[]]
+    a = workspace.put_tile[dash, ids[i], asked[i], draws[i], titles[i], places[j], 0, true, at]
+    if not a.ok
+        return a
+    b = workspace.put_tile[dash, ids[j], asked[j], draws[j], titles[j], places[i], 0, true, at]
+    if not b.ok
+        return b
+    return 1
+
+--- when a tile was last refreshed, '' where it never was
+fn _refreshed_at[answers, tile]
+    found = ''
+    mine = answers[answers.tile eq tile]
+    if not mine.ok
+        return found
+    for c in mine.at
+        found = workspace.text_of[c]
+    return found
+
+--- whether a refresh made at `at` is older than `every` seconds
+fn _stale[at, every]
+    if at eq ''
+        return true
+    t = moment[at]
+    if not t.ok
+        return true
+    return now[] - t gte float[every]
+
+--- whether the scheduler should refresh the dashboard now
+fn due[dash]
+    every = workspace.board_every[dash]
+    if every lte 0
+        return false
+    answers = workspace.tile_answers[]
+    t = workspace.board_tiles[dash]
+    for c in t.tile
+        if _stale[_refreshed_at[answers, workspace.small[c]], every]
+            return true
+    return false
+
+--- a tile's query is asked, its answer kept and read back; a dashboard
+--- refreshed every minute is due until its tiles are refreshed
+test a_tile_is_refreshed_and_its_dashboard_falls_due[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 2], shop = ['north', 'south', 'north']], by = ['item']]
+    s = workspace.put_query['by shop', map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum'], '2026-11-05T10:00:00Z', true]
+    d = make_board['Sales', 0]
+    assert[workspace.dashboards[] eq ['Sales']]
+    t = add_tile['Sales', 'by shop', 'bars', 'Quantity by shop']
+    g = add_tile['Sales', 'gone', 'number', 'Nothing']
+    assert[t eq 1 and g eq 2]
+    assert[len[workspace.board_tiles['Sales']] eq 2]
+    assert[not due['Sales']]
+    e = set_every['Sales', 60]
+    assert[workspace.board_every['Sales'] eq 60]
+    assert[not due['Sales']]
+    assert[move_tile['Sales', 2, -1] eq 1]
+    assert[move_tile['Sales', 2, -1] eq 0]
+    order = for c in workspace.board_tiles['Sales'].title
+        workspace.text_of[c]
+    assert[order eq ['Nothing', 'Quantity by shop']]
+    assert[refresh['Sales'] eq 2]
+    assert[not due['Sales']]
+    kept = frame.load[workspace.tile_file[1]]
+    assert[kept.ok]
+    assert[len[kept] eq 2]
+    answers = workspace.tile_answers[]
+    missing = answers[answers.tile eq 2]
+    assert[len[missing] eq 1]
+    assert['There is no saved query called gone' in str[missing.problem[0]]]
+    r = remove_tile['Sales', 2]
+    assert[len[workspace.board_tiles['Sales']] eq 1]
+    u = remove_board['Sales']
+    assert[workspace.dashboards[] eq []]
+    gone = rm[workspace.home[]]

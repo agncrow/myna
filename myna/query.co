@@ -8,6 +8,7 @@ use web, ui, frame, magpie
 use myna.workspace
 use myna.workbench
 use myna.queries
+use myna.tiles
 
 --- the fields of the query being written
 tbl = ''
@@ -32,6 +33,8 @@ problem = ''
 ran = 0
 --- the notebook the query was last written into
 made = ''
+--- the dashboard a saved query is pinned to
+pin_to = ''
 
 derive tables
     tick = now[]
@@ -54,6 +57,10 @@ derive saved
     seen = ran
     tick = now[]
     return workspace.saved_queries[]
+
+derive boards
+    seen = ran
+    return workspace.dashboards[]
 
 --- the form's fields as a query
 derive asking
@@ -120,6 +127,26 @@ fn delete_query[name]
         return
     ran = ran + 1
     notice['Removed `name`; its versions stay in _queries']
+
+--- a saved query pinned to a dashboard as its last tile: a summary as
+--- bars, any other query as a table
+fn pin_query[name]
+    dash = pin_to
+    if dash eq '' and len[boards] gt 0
+        dash = boards[0]
+    if dash eq ''
+        notice['Make a dashboard first, on the Dashboards page']
+        return
+    q = workspace.saved_query[name]
+    draw = 'table'
+    if queries.field_of[q, 'verb'] eq 'summary'
+        draw = 'bars'
+    t = tiles.add_tile[dash, name, draw, name]
+    if not t.ok
+        notice['The query was not pinned: `t.reason`']
+        return
+    ran = ran + 1
+    notice['Pinned `name` to `dash`']
 
 --- a name no notebook has: the one asked, or it with a number after it
 fn _free_name[base, taken]
@@ -215,29 +242,12 @@ fn _cell_text[c]
         return ''
     return s
 
-fn _shown_number[v]
-    if v eq floor[v]
-        return '`int[v]`'
-    return '`round[v * 100.0] / 100.0`'
-
---- a bar's length: its share of the largest, in hundredths of its track
---- (at least one where the value is above nothing)
-fn _bar_share[v, top]
-    if top lte 0.0 or v lte 0.0
-        return 0
-    n = int[round[v / top * 100.0]]
-    if n lt 1
-        return 1
-    if n gt 100
-        return 100
-    return n
-
 view _bar[label, v, top]
-    share = _bar_share[v, top]
+    share = queries.share[v, top]
     return row[
         p[label, size = 's', width = '140px', class = 'barlabel'],
         stack[stack[width = '`share`%', class = 'bar'], width = '244px', class = 'bartrack'],
-        p[_shown_number[v], size = 's', font = 'mono', width = '90px', class = 'barvalue'],
+        p[queries.shown_number[v], size = 's', font = 'mono', width = '90px', class = 'barvalue'],
         gap = 's', align = 'center']
 
 --- a summary's first aggregate, a bar per group of its first column
@@ -297,7 +307,10 @@ view _saved[]
 view _saved_list[s]
     if len[s] eq 0
         return p['none yet: name the query and Save', color = 'muted', size = 's']
-    return table[s, key = 'name', hide = ['at'], actions = map[Open = open_query, Remove = delete_query], confirm = map[Remove = 'Remove this saved query?']]
+    listed = table[s, key = 'name', hide = ['at'], actions = map[Open = open_query, Pin = pin_query, Remove = delete_query], confirm = map[Remove = 'Remove this saved query?']]
+    if len[boards] eq 0
+        return stack[listed, p['Pin puts a query on a dashboard: make one on the Dashboards page first', color = 'muted', size = 'xs'], gap = 's']
+    return stack[listed, row[p['Pin to', color = 'muted', size = 's'], select[boards, pin_to], gap = 's', align = 'center'], gap = 's']
 
 view _body[]
     return stack[
@@ -342,6 +355,9 @@ test a_summary_is_asked_saved_and_made_a_notebook[]
     click[a, to_notebook]
     assert[made eq 'by shop']
     assert[workspace.sources['by shop'] eq ['use magpie\nf = magpie.summary[\'orders\', [\'shop\'], [\'qty\'], [\'sum\']]\nlog[f]']]
+    d = tiles.make_board['Sales', 0]
+    click[a, pin_query['by shop']]
+    assert[len[workspace.board_tiles['Sales']] eq 1]
     click[a, delete_query['by shop']]
     assert[len[saved] eq 0]
     gone = rm[workspace.home[]]

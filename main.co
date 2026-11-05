@@ -2,7 +2,7 @@
 --- from this folder serves it on port 3800: the notebooks (cells of Crow
 --- run as one program, every save and every run kept in a Magpie log), the
 --- catalog of the workspace's tables, the queries over them (saved, and
---- taken into a notebook), the jobs (the scheduler and every
+--- taken into a notebook), the dashboards of saved queries, the jobs (the scheduler and every
 --- run) and the settings. The workspace lives in myna_data/ beside the
 --- program (or the folder MYNA_DATA names); ./test.sh runs the tests.
 use web, ui
@@ -12,6 +12,7 @@ use myna.catalog
 use myna.jobs
 use myna.settings
 use myna.query
+use myna.dashboards
 use myna.soon
 
 workspace.ready[]
@@ -22,6 +23,6 @@ page['/catalog', catalog.render, url = ['catalog.picked']]
 page['/jobs', jobs.render]
 page['/settings', settings.render]
 page['/query', query.render, url = ['query.tbl']]
-page['/dashboards', soon.dashboards]
+page['/dashboards', dashboards.render, url = ['dashboards.current']]
 page['/models', soon.models]
 page['/ask', soon.ask]

@@ -14,9 +14,6 @@ view _soon[name, what, meanwhile]
             gap = 's', pad = 'l', surface = 'card', border = true, max_width = '640px'],
         gap = 'm']]
 
-view dashboards[]
-    return _soon['Dashboards', 'Charts and tables of notebooks\' answers on one page, refreshed by the scheduler.', 'Meanwhile a notebook\'s cells show their answers, and Jobs runs a notebook on a schedule.']
-
 view models[]
     return _soon['Models', 'Training runs and their metrics, held in a Magpie log, compared side by side.', 'Meanwhile a notebook cell trains a model with the packages Crow ships (models/boost, optimize).']
 

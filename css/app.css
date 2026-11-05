@@ -71,3 +71,16 @@ a.button:hover { border-color: var(--crow-accent); }
 .qform .crow-field { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
 .qform .crow-field label, .qform .qlabel { font-size: 12px; line-height: 18px; color: var(--crow-muted); font-weight: 600; margin: 0; }
 .qform .crow-field input { width: 150px; box-sizing: border-box; }
+
+/* a dashboard's tiles: as many columns as fit, each at least 280px */
+.tiles { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)) !important; }
+.tile { min-width: 0; }
+.tile .tlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.tile .tvalue { text-align: right; flex-shrink: 0; }
+.tile .ttrack { min-width: 0; }
+.tilebar button { padding: 0.15rem 0.5rem; }
+/* the dashboards as tabs: a link each, the one shown underlined */
+.boardtabs { border-bottom: 1px solid var(--crow-border); }
+.boardtab { padding: 0.5rem 0.9rem; color: var(--crow-muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.boardtab:hover { color: var(--crow-text); }
+.boardtab.on { color: var(--crow-text); font-weight: 600; border-bottom-color: var(--crow-accent); }

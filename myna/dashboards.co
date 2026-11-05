@@ -1,0 +1,433 @@
+--- Dashboards: saved queries (myna/queries.co) on one page as tiles, each
+--- drawn as bars, a number or a table, refreshed by the page's Refresh or
+--- by the scheduler every so many minutes. A dashboard and its tiles are
+--- rows of the _dashboards log, each tile's last answer a file beside the
+--- logs (myna/tiles.co); the page draws the kept answers and never asks a
+--- query while it draws.
+use web, ui, frame
+use myna.workspace
+use myna.workbench
+use myna.queries
+use myna.tiles
+
+--- a tile as the page draws it: what it shows, its last answer (its
+--- labels and numbers for bars and a number, the frame for a table) or
+--- why it has none
+struct Tile [tile, title, draw, query, problem, at, rows, labels, amounts, value_col, answer]
+
+--- the dashboard asked for in the address
+current = ''
+--- the New dashboard dialog
+naming = false
+new_name = ''
+--- the Add tile form
+adding = false
+add_query = ''
+add_draw = 'bars'
+add_title = ''
+--- moved by every write, so the lists read again
+changed = 0
+
+derive names
+    seen = changed
+    return workspace.dashboards[]
+
+derive query_names
+    seen = changed
+    found = []
+    for c in workspace.saved_queries[].name
+        found = push[found, workspace.text_of[c]]
+    return found
+
+--- the dashboard shown: the one asked for, else the first
+derive shown
+    if current in names
+        return current
+    if len[names] gt 0
+        return names[0]
+    return ''
+
+derive every
+    seen = changed
+    return workspace.board_every[shown]
+
+--- a number a cell holds, 0 where it holds none
+fn _number[c]
+    n = float[c]
+    if not n.ok
+        return 0.0
+    return n
+
+fn _no_answer[tile, title, draw, query, problem, at]
+    return Tile[tile, title, draw, query, problem, at, 0, [], [], '', frame.new[]]
+
+--- a tile's kept answer read back: its first text column as the labels,
+--- its first column of numbers as the amounts
+fn _tile_of[tile, title, draw, query, answers]
+    at = ''
+    problem = ''
+    rows = 0
+    mine = answers[answers.tile eq tile]
+    if mine.ok
+        for c in mine.at
+            at = workspace.text_of[c]
+        for c in mine.problem
+            problem = workspace.text_of[c]
+        for c in mine.rows
+            rows = workspace.small[c]
+    if at eq ''
+        return _no_answer[tile, title, draw, query, 'Not refreshed yet', at]
+    if problem ne ''
+        return _no_answer[tile, title, draw, query, problem, at]
+    f = frame.load[workspace.tile_file[tile]]
+    if not f.ok
+        return _no_answer[tile, title, draw, query, 'The answer is not kept: Refresh asks again', at]
+    cols = f.columns
+    kinds = f.dtypes
+    label_col = ''
+    value_col = ''
+    for i in range[len[cols]]
+        if cols[i] ne '_pos'
+            if label_col eq '' and kinds[i] eq 'str'
+                label_col = cols[i]
+            if value_col eq '' and (kinds[i] eq 'int' or kinds[i] eq 'float')
+                value_col = cols[i]
+    labels = []
+    amounts = []
+    if label_col ne ''
+        labels = for c in f.`label_col`
+            workspace.text_of[c]
+    if value_col ne ''
+        amounts = for c in f.`value_col`
+            _number[c]
+    return Tile[tile, title, draw, query, '', at, rows, labels, amounts, value_col, f]
+
+fn _board_of[dash]
+    found = []
+    if dash eq ''
+        return found
+    t = workspace.board_tiles[dash]
+    answers = workspace.tile_answers[]
+    ids = for c in t.tile
+        workspace.small[c]
+    asked = for c in t.query
+        workspace.text_of[c]
+    draws = for c in t.draw
+        workspace.text_of[c]
+    titles = for c in t.title
+        workspace.text_of[c]
+    for i in range[len[ids]]
+        found = push[found, _tile_of[ids[i], titles[i], draws[i], asked[i], answers]]
+    return found
+
+--- the tiles drawn: read again as the clock moves, since the scheduler
+--- refreshes them from a process of its own
+derive board
+    seen = changed
+    tick = now[]
+    return _board_of[shown]
+
+fn ask_name[]
+    naming = true
+    new_name = ''
+
+fn close_naming[]
+    naming = false
+
+fn create_board[]
+    name = trim[new_name]
+    if name eq ''
+        notice['Name the dashboard first']
+        return
+    if name in names
+        notice['A dashboard called `name` exists']
+        return
+    w = tiles.make_board[name, 0]
+    if not w.ok
+        notice['The dashboard was not made: `w.reason`']
+        return
+    changed = changed + 1
+    naming = false
+    current = name
+
+fn drop_board[]
+    name = shown
+    w = tiles.remove_board[name]
+    if not w.ok
+        notice['The dashboard was not removed: `w.reason`']
+        return
+    changed = changed + 1
+    current = ''
+    notice['Removed `name`; its versions stay in _dashboards']
+
+fn open_adding[]
+    adding = true
+    add_title = ''
+    if add_query eq '' and len[query_names] gt 0
+        add_query = query_names[0]
+
+fn close_adding[]
+    adding = false
+
+fn add_one[]
+    name = trim[add_query]
+    if name eq ''
+        notice['Pick a saved query']
+        return
+    title = trim[add_title]
+    if title eq ''
+        title = name
+    t = tiles.add_tile[shown, name, add_draw, title]
+    if not t.ok
+        notice['The tile was not added: `t.reason`']
+        return
+    changed = changed + 1
+    adding = false
+
+fn drop_tile[tile]
+    w = tiles.remove_tile[shown, tile]
+    if not w.ok
+        notice['The tile was not removed: `w.reason`']
+        return
+    changed = changed + 1
+
+fn earlier[tile]
+    w = tiles.move_tile[shown, tile, -1]
+    if not w.ok
+        notice['The tile was not moved: `w.reason`']
+        return
+    changed = changed + 1
+
+fn later_place[tile]
+    w = tiles.move_tile[shown, tile, 1]
+    if not w.ok
+        notice['The tile was not moved: `w.reason`']
+        return
+    changed = changed + 1
+
+fn refresh_now[]
+    n = tiles.refresh[shown]
+    changed = changed + 1
+    notice['Refreshed `n` tiles']
+
+fn refresh_every[seconds]
+    w = tiles.set_every[shown, seconds]
+    if not w.ok
+        notice['The refresh was not set: `w.reason`']
+        return
+    changed = changed + 1
+
+view _labelled[label, child]
+    return stack[p[label, size = 'xs', class = 'qlabel'], child, gap = 'xs']
+
+view _bar[label, v, top]
+    share = queries.share[v, top]
+    return row[
+        p[label, size = 'xs', width = '96px', class = 'tlabel'],
+        stack[stack[width = '`share`%', class = 'bar'], fill = 'true', class = 'ttrack'],
+        p[queries.shown_number[v], size = 'xs', font = 'mono', width = '64px', class = 'tvalue'],
+        gap = 's', align = 'center']
+
+view _bars[t]
+    if t.value_col eq ''
+        return p['the answer has no column of numbers to draw', color = 'muted', size = 's']
+    n = len[t.amounts]
+    if n gt 12
+        n = 12
+    top = 0.0
+    for v in t.amounts
+        if v gt top
+            top = v
+    bars = for i in range[n]
+        _bar[_label_at[t.labels, i], t.amounts[i], top]
+    if len[t.amounts] gt 12
+        return stack[bars, p['the first 12 of `len[t.amounts]` rows', color = 'muted', size = 'xs'], gap = 'xs']
+    return stack[bars, gap = 'xs']
+
+fn _label_at[labels, i]
+    if i lt len[labels]
+        return labels[i]
+    return '`i + 1`'
+
+view _number_of[t]
+    if len[t.amounts] eq 0
+        return stack[p['`t.rows`', size = 'xl', weight = 'bold', font = 'mono'], p['rows', color = 'muted', size = 'xs'], gap = 'xs']
+    said = t.value_col
+    if t.rows gt 1
+        said = '`said` · the first of `t.rows` rows'
+    return stack[p[queries.shown_number[t.amounts[0]], size = 'xl', weight = 'bold', font = 'mono'], p[said, color = 'muted', size = 'xs'], gap = 'xs']
+
+view _drawn[t]
+    if t.problem ne ''
+        return p[t.problem, color = 'down', size = 's']
+    if t.draw eq 'number'
+        return _number_of[t]
+    if t.draw eq 'table'
+        return stack[table[head[t.answer, 10], hide = ['_pos']], class = 'answer']
+    return _bars[t]
+
+--- when the tile's answer was made, and from which saved query where its
+--- title does not say
+fn _caption[t]
+    when = workspace.short_at[t.at]
+    if t.title eq t.query
+        return when
+    if t.at eq ''
+        return 'from `t.query`'
+    return 'from `t.query` · `when`'
+
+view _tile_card[t]
+    return stack[
+        row[
+            p[t.title, weight = 'bold'],
+            row[
+                button['↑', click = earlier[t.tile], tip = 'Move earlier'],
+                button['↓', click = later_place[t.tile], tip = 'Move later'],
+                button['✕', click = drop_tile[t.tile], tip = 'Remove the tile', confirm = 'Remove this tile?'],
+                gap = 'xs', class = 'tilebar'],
+            justify = 'between', align = 'center', gap = 's'],
+        _drawn[t],
+        p[_caption[t], color = 'muted', size = 'xs'],
+        gap = 's', pad = 'm', surface = 'card', border = true, class = 'tile']
+
+fn _every_label[seconds]
+    if seconds eq 0
+        return 'off'
+    if seconds lt 3600
+        return '`seconds / 60` min'
+    if seconds lt 86400
+        return '`seconds / 3600` h'
+    return '`seconds / 86400` d'
+
+view _every_button[seconds]
+    if every eq seconds
+        return button[_every_label[seconds], click = refresh_every[seconds], class = 'primary']
+    return button[_every_label[seconds], click = refresh_every[seconds]]
+
+view _controls[]
+    return row[
+        row[p['Refreshed by the scheduler', color = 'muted', size = 's'], _every_button[0], _every_button[60], _every_button[900], _every_button[3600], _every_button[86400], gap = 'xs', align = 'center', wrap = true],
+        row[
+            button['Refresh now', click = refresh_now, class = 'primary', tip = 'Ask every tile\'s query again'],
+            button['Add tile', click = open_adding],
+            button['Remove dashboard', click = drop_board, confirm = 'Remove this dashboard? Its tiles go with it.'],
+            gap = 's', wrap = true],
+        justify = 'between', align = 'center', gap = 'm', wrap = true]
+
+view _adding[]
+    if not adding
+        return stack[]
+    if len[query_names] eq 0
+        return stack[
+            p['There are no saved queries yet: save one on the Query page, then add it here.', size = 's'],
+            row[a['Open Query', href = '/query'], button['Cancel', click = close_adding], gap = 's', align = 'center'],
+            gap = 's', pad = 'm', surface = 'card', border = true]
+    return stack[
+        h2['Add a tile'],
+        row[
+            _labelled['Saved query', select[query_names, add_query]],
+            _labelled['Drawn as', select[['bars', 'number', 'table'], add_draw]],
+            field['Title', add_title, type = 'text'],
+            gap = 'm', wrap = true, align = 'end'],
+        row[button['Add', click = add_one, class = 'primary'], button['Cancel', click = close_adding, shortcut = 'escape'], gap = 's'],
+        gap = 'm', pad = 'm', surface = 'card', border = true, class = 'qform']
+
+--- the dashboards as tabs, each a link to its own address, the one shown
+--- marked (the dashboard shown is the first where the address names none)
+view _board_link[name]
+    if name eq shown
+        return a[name, href = '/dashboards?current=`name`', class = 'boardtab on']
+    return a[name, href = '/dashboards?current=`name`', class = 'boardtab']
+
+view _switcher[]
+    links = for n in names
+        _board_link[n]
+    return row[links, gap = 'none', wrap = true, class = 'boardtabs']
+
+view _tiles[]
+    if len[board] eq 0
+        return p['No tiles yet: Add tile shows a saved query here, or Pin one from the Query page.', color = 'muted', size = 's']
+    cards = for t in board
+        _tile_card[t]
+    return grid[cards, columns = 3, gap = 'm', class = 'tiles']
+
+view _first_page[]
+    return stack[
+        h2['No dashboards yet'],
+        p['A dashboard shows saved queries side by side, each as bars, a number or a table, and the scheduler can refresh it every few minutes.', color = 'muted'],
+        row[button['New dashboard', click = ask_name], gap = 's'],
+        gap = 's', pad = 'l', surface = 'card', border = true, max_width = '640px']
+
+view _naming[]
+    return modal[
+        stack[
+            h2['New dashboard'],
+            form[field['Name', new_name, type = 'text'], button['Create', class = 'primary'], submit = create_board],
+            button['Cancel', click = close_naming, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = naming]
+
+view _body[]
+    if shown eq ''
+        return stack[row[h1['Dashboards'], gap = 's'], _first_page[], gap = 'm']
+    return stack[
+        row[h1['Dashboards'], p['saved queries side by side, refreshed on demand or on a schedule', color = 'muted', size = 's'], gap = 's', align = 'center', wrap = true],
+        _switcher[],
+        _controls[],
+        _adding[],
+        _tiles[],
+        gap = 'm', class = 'cells']
+
+fn _where[name]
+    if name eq ''
+        return 'Dashboards'
+    return 'Dashboards / `name`'
+
+view render[]
+    return stack[
+        workbench.screen['Dashboards', _where[shown], button['New dashboard', click = ask_name], _body[]],
+        _naming[]]
+
+--- a dashboard is made, a saved query added as bars and as a number,
+--- refreshed, moved and removed
+test a_dashboard_shows_saved_queries_as_tiles[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 2], shop = ['north', 'south', 'north']], by = ['item']]
+    s = workspace.put_query['by shop', map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum'], '2026-11-05T10:00:00Z', true]
+    t = workspace.put_query['total', map[verb = 'summary', table = 'orders', by = '', of = 'qty', how = 'sum'], '2026-11-05T10:00:01Z', true]
+    a = app[render, wide = true]
+    assert['No dashboards yet' in html[a]]
+    click[a, ask_name]
+    change[a, 'new_name', 'Sales']
+    click[a, create_board]
+    assert[a.shown eq 'Sales']
+    assert['No tiles yet' in html[a]]
+    click[a, open_adding]
+    change[a, 'add_query', 'by shop']
+    change[a, 'add_title', 'Quantity by shop']
+    click[a, add_one]
+    click[a, open_adding]
+    change[a, 'add_query', 'total']
+    change[a, 'add_draw', 'number']
+    click[a, add_one]
+    drawn = html[a]
+    assert['Quantity by shop' in drawn]
+    assert['north' in drawn]
+    assert['>10<' in drawn]
+    assert[len[a.board] eq 2]
+    assert[a.board[0].labels eq ['north', 'south']]
+    click[a, earlier[2]]
+    assert[a.board[0].title eq 'total']
+    click[a, refresh_every[900]]
+    assert[a.every eq 900]
+    w = magpie.batch[workspace.at['orders'], frame.new[item = ['figs'], qty = [7], shop = ['east']], by = ['item']]
+    click[a, refresh_now]
+    assert['east' in html[a]]
+    assert['>17<' in html[a]]
+    click[a, drop_tile[2]]
+    assert[len[a.board] eq 1]
+    click[a, drop_board]
+    assert['No dashboards yet' in html[a]]
+    gone = rm[workspace.home[]]

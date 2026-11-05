@@ -158,6 +158,24 @@ fn named[q]
         return '`table`: search `column` for `words`'
     return '`table`: latest rows'
 
+--- a number as a tile or a bar shows it: whole, or to two places
+fn shown_number[v]
+    if v eq floor[v]
+        return '`int[v]`'
+    return '`round[v * 100.0] / 100.0`'
+
+--- a bar's length: its share of the largest, in hundredths of its track
+--- (at least one where the value is above nothing)
+fn share[v, top]
+    if top lte 0.0 or v lte 0.0
+        return 0
+    n = int[round[v / top * 100.0]]
+    if n lt 1
+        return 1
+    if n gt 100
+        return 100
+    return n
+
 --- a summary over a table a test wrote, its code and its line
 test a_summary_is_answered_and_written_as_code[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
