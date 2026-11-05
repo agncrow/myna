@@ -1,0 +1,92 @@
+--- Settings: the workspace's name, shown under the mark, and how long a
+--- notebook may run before it is stopped; each a row of the settings log.
+use web, ui
+use myna.workspace
+use myna.workbench
+
+place = ''
+limit = ''
+loaded = false
+
+derive kept_place
+    seen = loaded
+    return workspace.setting['workspace', 'Myna']
+
+derive folder
+    return workspace.home[]
+
+derive kept_limit
+    seen = loaded
+    return workspace.setting['limit', '60']
+
+--- the fields start from what is kept
+fn edit_settings[]
+    place = kept_place
+    limit = kept_limit
+    loaded = true
+
+fn save_settings[]
+    name = trim[place]
+    if name eq ''
+        notice['The workspace needs a name']
+        return
+    seconds = int[trim[limit]]
+    if not seconds.ok
+        notice['The time limit is a number of seconds']
+        return
+    if seconds lt 1 or seconds gt 3600
+        notice['The time limit is between 1 and 3600 seconds']
+        return
+    a = workspace.put_setting['workspace', name]
+    b = workspace.put_setting['limit', str[seconds]]
+    if not a.ok
+        notice['The settings were not saved: `a.reason`']
+        return
+    loaded = false
+    workbench.named = workbench.named + 1
+    notice['Saved']
+
+view _form[]
+    if not loaded
+        return stack[
+            _line['Workspace', kept_place],
+            _line['A notebook may run for', '`kept_limit` seconds'],
+            _line['Runs cells with', 'the crow on the PATH, in `folder`'],
+            row[button['Edit', click = edit_settings]],
+            gap = 'm', pad = 'm', surface = 'card', border = true, max_width = '560px']
+    return stack[
+        form[
+            field['Workspace name', place, type = 'text'],
+            field['Time limit for a run, in seconds', limit, type = 'text'],
+            button['Save'],
+            submit = save_settings],
+        gap = 'm', pad = 'm', surface = 'card', border = true, max_width = '560px']
+
+view _line[label, value]
+    return stack[p[label, color = 'muted', size = 'xs', weight = 'bold'], p[value], gap = 'xs']
+
+view render[]
+    return workbench.screen['Settings', 'Settings', a['New notebook', href = '/?naming=true'], stack[h1['Settings'], _form[], gap = 'm']]
+
+--- the workspace's name and the time limit are kept, and a limit that is
+--- no number is refused
+test settings_are_kept[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    assert['Myna' in html[a]]
+    click[a, edit_settings]
+    change[a, 'place', 'Research']
+    change[a, 'limit', 'soon']
+    click[a, save_settings]
+    assert[workspace.setting['workspace', 'Myna'] eq 'Myna']
+    change[a, 'limit', '90']
+    click[a, save_settings]
+    assert[workspace.setting['workspace', 'Myna'] eq 'Research']
+    assert[workspace.setting['limit', '60'] eq '90']
+    assert['Research' in html[a]]
+    assert[workbench.place_name eq 'Research']
+    b = app[render, wide = true]
+    assert[workbench.place_name eq 'Research']
+    gone = rm[workspace.home[]]

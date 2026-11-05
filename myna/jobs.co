@@ -1,0 +1,174 @@
+--- Jobs: the scheduler, the notebooks it runs and every run. The
+--- scheduler is a process of its own (scheduler.co): the page starts it,
+--- handing it the page's port so it ends when the page stops answering,
+--- and asks it to stop by a file it looks for; it says it is alive by
+--- writing the moment of its last round (_scheduler.beat in the
+--- workspace's folder).
+use web, ui, frame
+use myna.workspace
+use myna.engine
+use myna.workbench
+
+asked = 0
+run_open = -1
+
+fn _beat_age[beat, at]
+    if beat eq ''
+        return -1.0
+    t = moment[trim[beat]]
+    if not t.ok
+        return -1.0
+    return at - t
+
+fn _beat[]
+    if not exists['`workspace.home[]`/_scheduler.beat']
+        return ''
+    beat = read['`workspace.home[]`/_scheduler.beat']
+    if not beat.ok
+        return ''
+    return beat
+
+--- how long since the scheduler's last round, in seconds; -1 where it
+--- never ran or has stopped
+derive beat_age
+    tick = now[]
+    seen = asked
+    return _beat_age[_beat[], now[]]
+
+fn _every_words[seconds]
+    if seconds eq 900
+        return 'every 15 minutes'
+    if seconds eq 3600
+        return 'every hour'
+    if seconds eq 86400
+        return 'every day'
+    return 'every `seconds` seconds'
+
+fn _when[at]
+    if at eq ''
+        return ''
+    t = moment[at]
+    if not t.ok
+        return at
+    told = fmt[t, style = 'datetime']
+    if not told.ok
+        return at
+    plain = told
+    return '`plain` UTC'
+
+derive schedules
+    tick = now[]
+    seen = asked
+    names = workspace.scheduled[]
+    gaps = for n in names
+        _every_words[workspace.every[n]]
+    dues = for n in names
+        _when[workspace.due[n]]
+    lasts = for n in names
+        _when[workspace.last_scheduled[n]]
+    return frame.new[notebook = names, runs = gaps, next = dues, last = lasts]
+
+derive runs
+    tick = now[]
+    seen = asked
+    return workspace.runs['']
+
+derive run_text
+    if run_open lt 0
+        return ''
+    return engine.cleaned[workspace.run_output[run_open]]
+
+--- the scheduler started in the background, the page's port handed to it
+fn start_scheduler[]
+    home = workspace.home[]
+    if exists['`home`/_scheduler.stop']
+        gone = rm['`home`/_scheduler.stop']
+    r = shell['nohup crow run -i scheduler.co 3800 >> \'`home`/_scheduler.log\' 2>&1 < /dev/null &']
+    if not r.ok
+        notice['The scheduler did not start: `r.reason`']
+        return
+    asked = asked + 1
+    notice['The scheduler is starting: it writes its first round within a few seconds (log: `home`/_scheduler.log)']
+
+fn stop_scheduler[]
+    w = write['`workspace.home[]`/_scheduler.stop', str[now[]]]
+    if not w.ok
+        notice['The scheduler was not asked to stop: `w.reason`']
+        return
+    asked = asked + 1
+    notice['The scheduler stops at the end of its round, within fifteen seconds']
+
+fn show_run[run]
+    run_open = run
+
+fn close_run[]
+    run_open = -1
+
+view _scheduler[]
+    age = beat_age
+    if age lt 0.0
+        return row[
+            stack[p['Scheduler', weight = 'bold'], p['not running: scheduled notebooks wait until it runs', color = 'muted', size = 's'], gap = 'xs'],
+            button['Start the scheduler', click = start_scheduler],
+            justify = 'between', align = 'center', pad = 'm', surface = 'card', border = true]
+    if age gt 60.0
+        return row[
+            stack[p['Scheduler', weight = 'bold'], p['silent for `round[age]` s: it stopped without saying so', color = 'down', size = 's'], gap = 'xs'],
+            button['Start the scheduler', click = start_scheduler],
+            justify = 'between', align = 'center', pad = 'm', surface = 'card', border = true]
+    return row[
+        stack[p['Scheduler', weight = 'bold'], p['running · last round `round[age]` s ago · every 15 s', color = 'up', size = 's'], gap = 'xs'],
+        button['Stop the scheduler', click = stop_scheduler],
+        justify = 'between', align = 'center', pad = 'm', surface = 'card', border = true]
+
+view _schedules[]
+    s = schedules
+    if len[s] eq 0
+        return p['No notebook runs on a schedule: a notebook\'s Schedule sets one', color = 'muted', size = 's']
+    return table[s]
+
+view _runs[]
+    r = runs
+    if len[r] eq 0
+        return p['No runs yet', color = 'muted', size = 's']
+    return table[r, key = 'run', actions = map[Output = show_run], page = 20, sort = true]
+
+view _run_output[]
+    return modal[
+        stack[
+            row[h2['Run `run_open`'], button['Close', click = close_run, shortcut = 'escape'], justify = 'between', align = 'center'],
+            scroll[pre[run_text, font = 'mono', size = 's'], height = '420px'],
+            gap = 'm', pad = 'l'],
+        open = run_open gte 0]
+
+view _body[]
+    return stack[
+        row[h1['Jobs'], p['the scheduler, the notebooks it runs, and every run', color = 'muted', size = 's'], gap = 's', align = 'center'],
+        _scheduler[],
+        h2['Schedules'],
+        _schedules[],
+        h2['Runs'],
+        _runs[],
+        _run_output[],
+        gap = 'm']
+
+view render[]
+    return workbench.screen['Jobs', 'Jobs', a['New notebook', href = '/?naming=true'], _body[]]
+
+--- the runs and the schedules of the workspace are listed, and a run's
+--- output opens
+test the_runs_and_schedules_are_listed[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = workspace.put_cell['daily', 0, 'log[1]', true, '2026-11-04T10:00:00Z']
+    s = workspace.put_schedule['daily', 86400, '2026-11-04T10:00:00Z']
+    r = workspace.put_run['daily', '2026-11-04T10:01:00Z', 'you', 1, 'ok', 12, '@@cell 0 1.0\n1\n@@end 1.1']
+    a = app[render, wide = true]
+    assert[len[runs] eq 1]
+    assert[len[schedules] eq 1]
+    assert['every day' in html[a]]
+    assert['not running' in html[a]]
+    click[a, show_run[r]]
+    assert['── cell [1] ──' in run_text]
+    gone = rm[workspace.home[]]

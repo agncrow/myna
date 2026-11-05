@@ -1,0 +1,431 @@
+--- The workspace's own logs, each a Magpie log in the workspace's folder
+--- (myna_data/, or MYNA_DATA): the
+--- notebooks (a row per version of a cell, keyed by notebook and cell),
+--- the runs (a row per run, its position its number), the schedules (a
+--- row per notebook) and the settings (a row per key). The tables a
+--- notebook's cells write live beside them (myna_data/orders); the
+--- workspace's own names begin with an underscore. Every function here is
+--- handed what it reads and answers values, so the pages and the
+--- scheduler call them alike.
+use frame, magpie
+
+--- the workspace's folder: MYNA_DATA where it is set (inside this
+--- checkout, so a cell's program finds the packages it imports), else
+--- myna_data
+fn home[]
+    return env['MYNA_DATA', 'myna_data']
+
+fn _at[name]
+    return '`home[]`/`name`'
+
+fn ready[]
+    if not exists[home[]]
+        made = mkdir[home[]]
+
+--- whether the folder is a test's own: a test removes the workspace it
+--- made, and must never remove the one people work in
+fn scratch[]
+    return home[] ne 'myna_data'
+
+--- a number the logs hold (an id, a position, seconds) as an int held in
+--- 64 bits: each lies far below 2^62, and `int` of a cell answers an int
+--- that may grow (clamped by writes, which the width pass reads; an early
+--- return bounds nothing)
+fn small[c]
+    n = int[c]
+    if not n.ok
+        return 0
+    m = n
+    if m lt 0
+        m = 0
+    if m gt 4000000000000000000
+        m = 0
+    return m
+
+--- a cell the logs hold as plain text. A log's cells are parsed values:
+--- one is read by a loop over its column (an index of the column, or `.ok`
+--- of the cell, which reads a key named `ok`, answers a value that can
+--- fail, which a frame's column does not hold)
+fn text_of[c]
+    s = str[c]
+    if not s.ok
+        return ''
+    return s
+
+--- whether a log holds nothing yet, or is not there
+fn _empty[dir]
+    h = magpie.head[dir]
+    if not h.ok
+        return true
+    return h lt 0
+
+--- the newest version of every live cell of one notebook, in cell order
+fn _live[name]
+    f = magpie.latest[_at['_notebooks']]
+    if not f.ok
+        return f
+    mine = f[f.notebook eq name]
+    if not mine.ok
+        return mine
+    alive = mine[mine.live eq true]
+    if not alive.ok
+        return alive
+    return sort[alive, 'cell']
+
+--- the notebooks that hold a live cell, by name
+fn names[]
+    v = _names[]
+    if not v.ok
+        return []
+    return v
+
+fn _names[]
+    seen = map[]
+    if _empty[_at['_notebooks']]
+        return sort[keys[seen]]
+    f = magpie.latest[_at['_notebooks']]
+    if not f.ok
+        return sort[keys[seen]]
+    alive = f[f.live eq true]
+    if not alive.ok
+        return sort[keys[seen]]
+    for n in alive.notebook
+        seen = set[seen, text_of[n], true]
+    return sort[keys[seen]]
+
+--- a notebook's cells: their ids and their sources, in one order
+fn ids[name]
+    found = []
+    if _empty[_at['_notebooks']]
+        return found
+    r = _live[name]
+    if not r.ok
+        return found
+    found = for c in r.cell
+        small[c]
+    return found
+
+fn sources[name]
+    found = []
+    if _empty[_at['_notebooks']]
+        return found
+    r = _live[name]
+    if not r.ok
+        return found
+    found = for s in r.source
+        text_of[s]
+    return found
+
+--- the id a new cell of the notebook takes: one past every id it ever
+--- held, so a deleted cell's id is never taken again
+fn next_id[name]
+    top = -1
+    if _empty[_at['_notebooks']]
+        return 0
+    f = magpie.latest[_at['_notebooks']]
+    if not f.ok
+        return 0
+    mine = f[f.notebook eq name]
+    if not mine.ok
+        return 0
+    for c in mine.cell
+        if small[c] gt top
+            top = small[c]
+    return top + 1
+
+--- a version of a cell written: its source, whether it is live, and when
+fn put_cell[name, cell, source, live, at]
+    return magpie.batch[_at['_notebooks'], frame.new[notebook = [name], cell = [cell], source = [source], live = [live], at = [at]], by = ['notebook', 'cell']]
+
+--- every version of a notebook's cells, newest first
+fn versions[name]
+    empty = frame.new[version = [0], at = [''], cell = [0], live = [true], change = [''], source = ['']]
+    none = empty[empty.cell lt 0]
+    if _empty[_at['_notebooks']]
+        return none
+    f = magpie.scan[_at['_notebooks']]
+    if not f.ok
+        return none
+    mine = f[f.notebook eq name]
+    if not mine.ok
+        return none
+    changes = for s in mine.source
+        _preview[text_of[s]]
+    ats = for a in mine.at
+        short_at[text_of[a]]
+    shown = frame.new[version = mine._pos, at = ats, cell = mine.cell, live = mine.live, change = changes, source = mine.source]
+    return sort[shown, 'version', desc = true]
+
+--- a moment written as ISO text, shown short: its date and time, in UTC
+fn short_at[at]
+    if len[at] lt 19
+        return at
+    return '`slice[at, 0, 10]` `slice[at, 11, 19]` UTC'
+
+--- a cell's first line, cut to sixty characters, for a list of versions
+fn _preview[source]
+    first = split[source, '\n'][0]
+    if len[split[source, '\n']] gt 1
+        first = '`first` …'
+    if len[first] gt 60
+        return '`slice[first, 0, 60]`…'
+    return first
+
+--- a run written: what ran, when, who asked, how it went, and what it
+--- printed; answers its position, the run's number
+fn put_run[name, at, by, cells, status, ms, output]
+    return magpie.batch[_at['_runs'], frame.new[notebook = [name], at = [at], by = [by], cells = [cells], status = [status], ms = [ms], output = [output]]]
+
+--- every run, newest first (a notebook's alone where `name` is given)
+fn runs[name]
+    empty = frame.new[run = [0], notebook = [''], at = [''], by = [''], cells = [0], status = [''], ms = [0]]
+    none = empty[empty.run lt 0]
+    if _empty[_at['_runs']]
+        return none
+    f = magpie.latest[_at['_runs']]
+    if not f.ok
+        return none
+    ats = for a in f.at
+        short_at[text_of[a]]
+    shown = frame.new[run = f._pos, notebook = f.notebook, at = ats, by = f.by, cells = f.cells, status = f.status, ms = f.ms]
+    if name ne ''
+        shown = shown[shown.notebook eq name]
+    return sort[shown, 'run', desc = true]
+
+--- what a run printed, by its number
+fn run_output[run]
+    v = _run_output[run]
+    if not v.ok
+        return ''
+    return v
+
+fn _run_output[run]
+    if _empty[_at['_runs']]
+        return ''
+    f = magpie.latest[_at['_runs']]
+    if not f.ok
+        return ''
+    one = f[f._pos eq run]
+    if not one.ok
+        return ''
+    if len[one] eq 0
+        return ''
+    found = ''
+    for c in one.output
+        found = text_of[c]
+    return found
+
+--- when a notebook last ran by its schedule, or '' where it never did
+fn last_scheduled[name]
+    v = _last_scheduled[name]
+    if not v.ok
+        return ''
+    return v
+
+fn _last_scheduled[name]
+    if _empty[_at['_runs']]
+        return ''
+    f = magpie.latest[_at['_runs']]
+    if not f.ok
+        return ''
+    mine = f[f.notebook eq name]
+    if not mine.ok
+        return ''
+    timed = mine[mine.by eq 'schedule']
+    if not timed.ok
+        return ''
+    if len[timed] eq 0
+        return ''
+    newest = sort[timed, '_pos', desc = true]
+    found = ''
+    for c in head[newest, 1].at
+        found = text_of[c]
+    return found
+
+--- a notebook's schedule: every how many seconds it runs (0, never) and
+--- since when
+fn put_schedule[name, every, since]
+    return magpie.batch[_at['_schedules'], frame.new[notebook = [name], every = [every], since = [since]], by = ['notebook']]
+
+fn every[name]
+    v = _every[name]
+    if not v.ok
+        return 0
+    return v
+
+fn _every[name]
+    if _empty[_at['_schedules']]
+        return 0
+    f = magpie.latest[_at['_schedules']]
+    if not f.ok
+        return 0
+    mine = f[f.notebook eq name]
+    if not mine.ok
+        return 0
+    if len[mine] eq 0
+        return 0
+    found = 0
+    for c in mine.every
+        found = small[c]
+    return found
+
+fn since[name]
+    v = _since[name]
+    if not v.ok
+        return ''
+    return v
+
+fn _since[name]
+    if _empty[_at['_schedules']]
+        return ''
+    f = magpie.latest[_at['_schedules']]
+    if not f.ok
+        return ''
+    mine = f[f.notebook eq name]
+    if not mine.ok
+        return ''
+    if len[mine] eq 0
+        return ''
+    found = ''
+    for c in mine.since
+        found = text_of[c]
+    return found
+
+--- the notebooks that run on a schedule
+fn scheduled[]
+    v = _scheduled[]
+    if not v.ok
+        return []
+    return v
+
+fn _scheduled[]
+    found = []
+    if _empty[_at['_schedules']]
+        return found
+    f = magpie.latest[_at['_schedules']]
+    if not f.ok
+        return found
+    timed = f[f.every gt 0]
+    if not timed.ok
+        return found
+    found = for n in timed.notebook
+        text_of[n]
+    return found
+
+--- when a scheduled notebook is next due: its interval after its last
+--- scheduled run, or after the schedule was set where it never ran
+fn due[name]
+    gap = every[name]
+    if gap lte 0
+        return ''
+    last = last_scheduled[name]
+    if last eq ''
+        last = since[name]
+    if last eq ''
+        return ''
+    t = moment[last]
+    if not t.ok
+        return ''
+    return str[t + float[gap]]
+
+--- a setting, or its default where none was written
+fn setting[key, default]
+    v = _setting[key, default]
+    if not v.ok
+        return default
+    return v
+
+fn _setting[key, default]
+    if _empty[_at['_settings']]
+        return default
+    f = magpie.latest[_at['_settings']]
+    if not f.ok
+        return default
+    mine = f[f.key eq key]
+    if not mine.ok
+        return default
+    if len[mine] eq 0
+        return default
+    found = default
+    for c in mine.value
+        found = text_of[c]
+    return found
+
+fn put_setting[key, value]
+    return magpie.batch[_at['_settings'], frame.new[key = [key], value = [value]], by = ['key']]
+
+--- the tables in the workspace: every Magpie log under myna_data/, the
+--- workspace's own (an underscore first) after the notebooks' tables
+fn tables[]
+    found = []
+    entries = ls[home[]]
+    if not entries.ok
+        return found
+    mine = []
+    own = []
+    for e in entries
+        if not starts[e, '.']
+            h = magpie.head[_at[e]]
+            if h.ok
+                if starts[e, '_']
+                    own = push[own, e]
+                else
+                    mine = push[mine, e]
+    return concat[mine, own]
+
+--- a table's newest rows, as many as asked, and its size
+fn table_rows[name, n]
+    f = magpie.latest[_at[name]]
+    if not f.ok
+        return f
+    return head[f, n]
+
+fn table_count[name]
+    f = magpie.latest[_at[name]]
+    if not f.ok
+        return 0
+    return len[f]
+
+fn table_columns[name]
+    found = []
+    f = magpie.latest[_at[name]]
+    if not f.ok
+        return found
+    found = f.columns
+    return found
+
+test the_logs_hold_notebooks_runs_schedules_and_settings[]
+    assert[scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[home[]]
+    ready[]
+    assert[names[] eq []]
+    w = put_cell['scratch', 0, 'log[1]', true, '2026-11-04T10:00:00Z']
+    assert[w.ok]
+    w = put_cell['scratch', 1, 'log[2]', true, '2026-11-04T10:00:01Z']
+    w = put_cell['other', 0, 'log[3]', true, '2026-11-04T10:00:02Z']
+    assert[names[] eq ['other', 'scratch']]
+    assert[ids['scratch'] eq [0, 1]]
+    assert[sources['scratch'] eq ['log[1]', 'log[2]']]
+    w = put_cell['scratch', 0, '', false, '2026-11-04T10:00:03Z']
+    assert[ids['scratch'] eq [1]]
+    assert[next_id['scratch'] eq 2]
+    assert[len[versions['scratch']] eq 3]
+    w = put_cell['other', 0, '', false, '2026-11-04T10:00:04Z']
+    assert[names[] eq ['scratch']]
+    r = put_run['scratch', '2026-11-04T10:01:00Z', 'you', 1, 'ok', 12, '2']
+    assert[r.ok]
+    assert[len[runs['scratch']] eq 1]
+    assert[len[runs['other']] eq 0]
+    assert[run_output[r] eq '2']
+    assert[last_scheduled['scratch'] eq '']
+    s = put_schedule['scratch', 3600, '2026-11-04T10:00:00Z']
+    assert[every['scratch'] eq 3600]
+    assert[scheduled[] eq ['scratch']]
+    assert[due['scratch'] eq '2026-11-04T11:00:00Z']
+    r = put_run['scratch', '2026-11-04T11:00:05Z', 'schedule', 1, 'ok', 9, '2']
+    assert[due['scratch'] eq '2026-11-04T12:00:05Z']
+    assert[setting['workspace', 'myna'] eq 'myna']
+    p = put_setting['workspace', 'lab']
+    assert[setting['workspace', 'myna'] eq 'lab']
+    assert[tables[] eq ['_notebooks', '_runs', '_schedules', '_settings']]
+    gone = rm[home[]]

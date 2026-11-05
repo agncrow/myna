@@ -5,26 +5,81 @@
 A workbench over [Magpie](https://github.com/agncrow/magpie), written in
 Crow: the catalog, queries, notebooks, dashboards, models, a model to ask
 and the jobs that run it all, every piece of its state a Magpie log. The
-first page is the notebook.
+notebooks, the catalog, the jobs and the settings are built. The query
+editor, the dashboards, the models and the model to ask are not yet, and
+their pages say so.
 
-Myna needs Crow 0.8.0 or later and installs Magpie as any dependency:
+Myna needs Crow 0.8.0 or later and installs Magpie as any dependency.
+From this folder:
 
 ```
 crow install
 crow run main.co
 ```
 
-serves it on port 3800. A notebook is cells of Crow, run top to bottom as
-one program by the crow on the PATH, each cell's output shown under it;
-every save is a batch in `myna_data/notebooks`, so a notebook's history
-is its log, and `latest` is the notebook.
+serves it on port 3800. `crow run -i main.co` interprets it instead, and
+starts at once.
+
+## The pages
+
+- **Notebooks** (`/`): a notebook is cells of Crow, run top to bottom as
+  one program by the crow on the PATH, in the workspace's folder, so a
+  table a cell writes is a log beside the others. Each cell's output,
+  status and time are shown under it. A stop or a refusal is shown under
+  the cell it names, by the cell's own line, and the cells after it are
+  skipped. The side panel names the variables the cells left and the
+  tables they read and write. Ctrl+Enter runs, Ctrl+S saves and Escape
+  cancels an edit. Every save is a version and every run is kept with its
+  output: History lists both, opens a run's output and restores a
+  version. A notebook can also run on a schedule.
+- **Catalog** (`/catalog`): the workspace's tables, each a Magpie log,
+  with their columns and their latest rows.
+- **Jobs** (`/jobs`): the scheduler, the schedules and every run.
+- **Settings** (`/settings`): the workspace's name, and how long a run may
+  take before it is stopped (60 seconds unless set).
+
+The search in the top bar finds notebooks and tables by name.
+
+## The scheduler
+
+A notebook's schedule is kept in the workspace, and the scheduler runs
+it. The Jobs page starts the scheduler as a process of its own
+(`crow run -i scheduler.co 3800`). Every fifteen seconds it runs the
+notebooks that are due and records each run as the schedule's. It ends
+when the page asks it to, or when the page has not answered for three
+rounds. `crow run scheduler.co` runs it without a page, until the file
+`myna_data/_scheduler.stop` is written.
+
+## The workspace
+
+Everything Myna keeps is in `myna_data/` beside the program, each piece a
+Magpie log: `_notebooks` (every version of every cell), `_runs` (every
+run and its output), `_schedules`, `_settings`, and the tables the
+notebooks write. `MYNA_DATA` names another folder. It must lie inside
+this checkout, where the programs a notebook runs find `crow_modules/`.
+
+## Tests
 
 ```
-crow test main.co
+./test.sh
 ```
 
-runs its blocks: a notebook made, written, run and read back from the
-log, and a refusal shown under the cell that caused it.
+runs every part's blocks, interpreted and then compiled. The tests make
+and remove a workspace of their own, `test_data/`, and refuse to run in
+`myna_data/`. `./test.sh path/to/crow` tests another crow.
+
+## The code
+
+- `main.co` serves the pages.
+- `myna/workspace.co` reads and writes the logs.
+- `myna/engine.co` makes a notebook into one program, runs it, and reads
+  its output back cell by cell.
+- `myna/workbench.co` is the frame every page shares: the sidebar, the
+  top bar and the search.
+- `myna/notebooks.co`, `myna/catalog.co`, `myna/jobs.co` and
+  `myna/settings.co` are the pages; `myna/soon.co` holds the pages not
+  built yet.
+- `scheduler.co` is the scheduler.
 
 The design, the screens and the plan: the architecture document and the
 design canvas (private for now). The name: the myna, the clever talking

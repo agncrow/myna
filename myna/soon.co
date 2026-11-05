@@ -1,0 +1,27 @@
+--- The sections not built yet: each says what it will be, and what to use
+--- meanwhile, instead of a page that is not there.
+use web, ui
+use myna.workbench
+
+view _soon[name, what, meanwhile]
+    return workbench.screen[name, name, a['New notebook', href = '/?naming=true'], stack[
+        h1[name],
+        stack[
+            p['Not built yet', weight = 'bold'],
+            p[what, color = 'muted'],
+            p[meanwhile, color = 'muted'],
+            row[a['Open the notebooks', href = '/'], gap = 's'],
+            gap = 's', pad = 'l', surface = 'card', border = true, max_width = '640px'],
+        gap = 'm']]
+
+view query[]
+    return _soon['Query', 'A query editor over the workspace\'s tables: Magpie\'s summary, latest and search as a form, a chart of the answer, and the query saved.', 'Meanwhile a notebook cell asks the same: magpie.summary[\'orders\', by = [\'item\'], of = [\'qty\'], how = [\'sum\']].']
+
+view dashboards[]
+    return _soon['Dashboards', 'Charts and tables of notebooks\' answers on one page, refreshed by the scheduler.', 'Meanwhile a notebook\'s cells show their answers, and Jobs runs a notebook on a schedule.']
+
+view models[]
+    return _soon['Models', 'Training runs and their metrics, held in a Magpie log, compared side by side.', 'Meanwhile a notebook cell trains a model with the packages Crow ships (models/boost, optimize).']
+
+view ask[]
+    return _soon['Ask', 'Questions about the workspace answered by a model that reads the tables and runs notebooks as tools.', 'Meanwhile a notebook cell can call a model through Crow\'s llm module.']

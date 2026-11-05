@@ -2,9 +2,10 @@
 .crow_build/
 target/
 **/.crow/
-# the logs a run writes, and the programs a notebook runs
+# the workspace (its logs, and the programs a notebook runs), and the
+# workspace the tests make and remove
 myna_data/
-.myna/
+test_data/
 *.csv
 *.txt
 *.json

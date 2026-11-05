@@ -1,0 +1,104 @@
+--- The catalog: every table in the workspace — the ones the notebooks'
+--- cells write, then the workspace's own (an underscore first) — with its
+--- rows and columns, and the one picked shown: its newest rows, a page at
+--- a time. A table is a Magpie log in the workspace's folder, so `latest` is what
+--- it holds: one row per key, the newest version.
+use web, ui, frame, magpie
+use myna.workspace
+use myna.workbench
+
+picked = ''
+
+fn _kind_of[name]
+    if starts[name, '_']
+        return 'Myna'
+    return 'notebooks'
+
+--- every table, read again on every refresh: a notebook run or the
+--- scheduler may have written one
+derive listing
+    tick = now[]
+    names = workspace.tables[]
+    counts = for n in names
+        workspace.table_count[n]
+    cols = for n in names
+        join[workspace.table_columns[n], ', ']
+    kinds = for n in names
+        _kind_of[n]
+    return frame.new[table = names, rows = counts, columns = cols, kept_by = kinds]
+
+derive folder
+    return workspace.home[]
+
+derive chosen
+    tick = now[]
+    if picked eq ''
+        return ''
+    if picked in workspace.tables[]
+        return picked
+    return ''
+
+derive preview
+    tick = now[]
+    return workspace.table_rows[picked, 1000]
+
+derive picked_count
+    tick = now[]
+    return workspace.table_count[picked]
+
+fn pick[name]
+    picked = name
+
+fn unpick[]
+    picked = ''
+
+view _listing[]
+    l = listing
+    if len[l] eq 0
+        return stack[
+            p['No tables yet. A notebook cell makes one: magpie.batch[\'orders\', frame.new[item = [\'apples\'], qty = [3]], by = [\'item\']]', color = 'muted'],
+            gap = 's']
+    return table[l, key = 'table', click = pick, actions = map[Open = pick], sort = true]
+
+view _picked[]
+    name = chosen
+    if name eq ''
+        return p['Pick a table to see its rows', color = 'muted', size = 's']
+    rows = preview
+    return stack[
+        row[row[h2[name], p['`picked_count` rows · newest version of each key', color = 'muted', size = 's'], gap = 's', align = 'center'], button['Close', click = unpick], justify = 'between', align = 'center'],
+        table[rows, page = 50, sort = true],
+        gap = 's', pad = 'm', surface = 'card', border = true]
+
+view _body[]
+    place = folder
+    return stack[
+        row[h1['Catalog'], p['the tables of the workspace, each a Magpie log in `place`', color = 'muted', size = 's'], gap = 's', align = 'center'],
+        _listing[],
+        _picked[],
+        gap = 'm']
+
+fn _where[name]
+    if name eq ''
+        return 'Catalog'
+    return 'Catalog / `name`'
+
+view render[]
+    return workbench.screen['Catalog', _where[chosen], a['New notebook', href = '/?naming=true'], _body[]]
+
+--- a table a cell wrote is listed with its size and opened to its rows
+test a_table_is_listed_and_opened[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = magpie.batch['`workspace.home[]`/orders', frame.new[item = ['apples', 'pears'], qty = [3, 5]], by = ['item']]
+    a = app[render, wide = true]
+    l = listing
+    assert[len[l] eq 1]
+    assert['orders' in html[a]]
+    click[a, pick['orders']]
+    assert[chosen eq 'orders']
+    assert['pears' in html[a]]
+    click[a, unpick]
+    assert[chosen eq '']
+    gone = rm[workspace.home[]]

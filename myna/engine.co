@@ -1,0 +1,397 @@
+--- A notebook run: its cells in order as one program, each behind a line
+--- marking where it begins and when, a last line marking the end, and a
+--- line per top-level name the cells assign naming its kind. The program
+--- runs in the workspace's folder (so a cell's tables are the
+--- workspace's) by the crow on the PATH, under a time limit, and what it
+--- printed is read back: each cell's output, its milliseconds, how it
+--- ended, and the names it left. A refusal or a stop names the program's
+--- line; it is shown under the cell holding that line, as the cell's own.
+
+--- a count of cells as a loop walks it: none below zero, and a notebook
+--- holds far fewer than ten thousand cells; never more than `most`
+fn _cells[upto, most]
+    n = upto
+    if n lt 0
+        n = 0
+    if n gt 10000
+        n = 10000
+    if n gt most
+        n = most
+    return n
+
+fn _safe[c]
+    if c in 'abcdefghijklmnopqrstuvwxyz0123456789'
+        return c
+    return '_'
+
+--- a notebook's name as a file's: its letters and digits, the rest '_'
+fn slug[name]
+    pieces = for c in split[lower[trim[name]], '']
+        _safe[c]
+    return join[pieces, '']
+
+fn _is_name[word]
+    if word eq ''
+        return false
+    chars = split[word, '']
+    if chars[0] not in 'abcdefghijklmnopqrstuvwxyz_'
+        return false
+    bad = 0
+    for c in chars
+        if c not in 'abcdefghijklmnopqrstuvwxyz0123456789_'
+            bad = bad + 1
+    return bad eq 0
+
+--- the names a line assigns at the top level: `x = …`, `a, b = …`
+fn _assigns[line]
+    found = []
+    parts = split[line, ' = ']
+    if len[parts] lt 2
+        return found
+    left = parts[0]
+    if left ne trim[left]
+        return found
+    good = true
+    for piece in split[left, ',']
+        if _is_name[trim[piece]]
+            found = push[found, trim[piece]]
+        else
+            good = false
+    if not good
+        return []
+    return found
+
+--- every top-level name the cells before `upto` assign, each once
+fn names[sources, upto]
+    found = []
+    for i in range[_cells[upto, len[sources]]]
+        for line in split[sources[i], '\n']
+            for n in _assigns[line]
+                if n not in found
+                    found = push[found, n]
+    return found
+
+--- the lines a cell's source takes in the program (an empty one, one)
+fn _height[source]
+    n = len[split[source, '\n']]
+    if n lt 1
+        return 1
+    return n
+
+--- the program's line where each cell's source begins: each cell's
+--- marker line comes first
+fn starts_at[sources, upto]
+    found = []
+    line = 1
+    for i in range[_cells[upto, len[sources]]]
+        found = push[found, line + 1]
+        line = line + 1 + _height[sources[i]]
+    return found
+
+--- the program of the cells before `upto`
+fn program[sources, upto]
+    parts = []
+    for i in range[_cells[upto, len[sources]]]
+        parts = push[parts, 'log[\'@@cell `i` \`float[now[]]\`\']']
+        parts = push[parts, sources[i]]
+    parts = push[parts, 'log[\'@@end \`float[now[]]\`\']']
+    for n in names[sources, upto]
+        parts = push[parts, 'log[\'@@name `n` \`type[`n`]\`\']']
+    return join[parts, '\n']
+
+--- the program written as .runs/<file>.co in the workspace's folder and
+--- run there by the crow on the PATH, stopped after `limit` seconds
+fn run[home, file, src, limit]
+    if not exists['`home`/.runs']
+        made = mkdir['`home`/.runs']
+    wrote = write['`home`/.runs/`file`.co', src]
+    if not wrote.ok
+        return error[wrote.reason, 'myna']
+    return shell['cd \'`home`\' && perl -e \'alarm shift; exec @ARGV\' `limit` crow run -i .runs/`file`.co 2>&1']
+
+--- the cell a program's line lies in
+fn _cell_of[n, firsts]
+    cell = 0
+    for i in range[len[firsts]]
+        if firsts[i] lte n
+            cell = i
+    return cell
+
+--- a program's line as its cell's: the cell's first line is 1
+fn _own_line[n, firsts]
+    return n - firsts[_cell_of[n, firsts]] + 1
+
+--- a line of what the run printed, its program lines made the cell's:
+--- a refusal's `.runs/<file>.co:5:5: …` and its excerpt's `  5 │ …`, and
+--- a stop's `runtime error: line 5: …`
+fn _relined[line, file, firsts]
+    marker = '.runs/`file`.co:'
+    if marker in line
+        after = split[line, marker]
+        words = split[after[1], ':']
+        n = int[words[0]]
+        if n.ok
+            if len[words] gt 2
+                rest = join[slice[words, 2, len[words]], ':']
+                return 'line `_own_line[n, firsts]`, column `words[1]`:`rest`'
+    if starts[line, 'runtime error: line ']
+        after = slice[line, 20, len[line]]
+        words = split[after, ':']
+        n = int[words[0]]
+        if n.ok
+            rest = join[slice[words, 1, len[words]], ':']
+            return 'runtime error: line `_own_line[n, firsts]`:`rest`'
+    if '│' in line
+        sides = split[line, '│']
+        n = int[trim[sides[0]]]
+        if n.ok
+            rest = join[slice[sides, 1, len[sides]], '│']
+            return '  `_own_line[n, firsts]` │`rest`'
+    return line
+
+fn _relined_all[text, file, firsts]
+    lines = for line in split[text, '\n']
+        _relined[line, file, firsts]
+    return join[lines, '\n']
+
+--- the cell a refusal names first, where the program was refused before
+--- it ran (no marker printed), else -1
+fn refused_at[out, file, firsts]
+    if '@@cell ' in out
+        return -1
+    marker = '.runs/`file`.co:'
+    if marker not in out
+        return 0
+    words = split[split[out, marker][1], ':']
+    n = int[words[0]]
+    if not n.ok
+        return 0
+    return _cell_of[n, firsts]
+
+--- what each cell printed, by the markers; a refusal under the cell it
+--- names
+fn outputs[out, upto, file, firsts]
+    found = []
+    for i in range[_cells[upto, 10000]]
+        found = push[found, '']
+    body = split[out, '@@end '][0]
+    refused = refused_at[out, file, firsts]
+    if refused gte 0
+        if refused lt upto
+            found[refused] = trim[_relined_all[body, file, firsts]]
+        return found
+    pieces = split[body, '@@cell ']
+    for p in slice[pieces, 1, len[pieces]]
+        lines = split[p, '\n']
+        n = int[split[lines[0], ' '][0]]
+        if n.ok
+            if n lt upto
+                found[n] = trim[_relined_all[join[slice[lines, 1, len[lines]], '\n'], file, firsts]]
+    return found
+
+--- whether each cell's marker was printed
+fn reached[out, upto]
+    found = []
+    for i in range[_cells[upto, 10000]]
+        found = push[found, false]
+    pieces = split[split[out, '@@end '][0], '@@cell ']
+    for p in slice[pieces, 1, len[pieces]]
+        n = int[split[split[p, '\n'][0], ' '][0]]
+        if n.ok
+            if n lt upto
+                found[n] = true
+    return found
+
+--- each cell's milliseconds, from its marker to the next one's or to the
+--- end's; -1 where it was not reached or did not finish
+fn times[out, upto]
+    at = []
+    for i in range[_cells[upto, 10000]]
+        at = push[at, -1.0]
+    finish = -1.0
+    halves = split[out, '@@end ']
+    if len[halves] gt 1
+        t = float[split[halves[1], '\n'][0]]
+        if t.ok
+            finish = t
+    pieces = split[halves[0], '@@cell ']
+    for p in slice[pieces, 1, len[pieces]]
+        words = split[split[p, '\n'][0], ' ']
+        if len[words] gt 1
+            n = int[words[0]]
+            t = float[words[1]]
+            if n.ok
+                if t.ok
+                    if n lt upto
+                        at[n] = t
+    ms = []
+    count = _cells[upto, 10000]
+    for i in range[count]
+        stop = finish
+        if i + 1 lt count
+            if at[i + 1] gte 0.0
+                stop = at[i + 1]
+        took = -1
+        if at[i] gte 0.0
+            if stop gte 0.0
+                took = _ms[(stop - at[i]) * 1000.0]
+        ms = push[ms, took]
+    return ms
+
+--- milliseconds as an int held in 64 bits: a run lasts far less than
+--- 2^62 of them, and `round` of a float answers an int that may grow
+fn _ms[x]
+    n = round[x]
+    if n lt 0
+        n = 0
+    if n gt 1000000000000
+        n = 1000000000000
+    return n
+
+fn _state[i, seen, last, done, refused, status]
+    if done
+        return 'ok'
+    if refused gte 0
+        if i eq refused
+            return 'refused'
+        return 'skipped'
+    if not seen
+        return 'skipped'
+    if i lt last
+        return 'ok'
+    if status eq 142
+        return 'timeout'
+    return 'error'
+
+--- how each cell ended: 'ok', 'error', 'refused', 'timeout' or 'skipped'
+fn states[out, upto, status, file, firsts]
+    seen = reached[out, upto]
+    done = '@@end ' in out
+    refused = refused_at[out, file, firsts]
+    last = -1
+    count = len[seen]
+    for i in range[count]
+        if seen[i]
+            last = i
+    found = []
+    for i in range[count]
+        found = push[found, _state[i, seen[i], last, done, refused, status]]
+    return found
+
+--- the names the cells left, each as 'name kind'
+fn kinds[out]
+    found = []
+    for line in split[out, '\n']
+        if starts[line, '@@name ']
+            found = push[found, slice[line, 7, len[line]]]
+    return found
+
+--- how a whole run went, by how its cells did
+fn verdict[each]
+    for s in each
+        if s ne 'ok'
+            if s ne 'skipped'
+                return s
+    return 'ok'
+
+--- the logs the cells name in Magpie calls of the verbs given
+fn _named[sources, verbs]
+    found = []
+    for s in sources
+        pieces = split[s, 'magpie.']
+        for piece in slice[pieces, 1, len[pieces]]
+            verb = split[piece, '['][0]
+            if verb in verbs
+                rest = slice[piece, len[verb] + 1, len[piece]]
+                if starts[rest, '\'']
+                    name = split[slice[rest, 1, len[rest]], '\''][0]
+                    if name not in found
+                        found = push[found, name]
+    return found
+
+--- the tables the cells read, and the ones they write
+fn reads[sources]
+    return _named[sources, ['latest', 'scan', 'since', 'tail', 'lookup', 'search', 'nearest', 'summary', 'prior', 'head', 'batches', 'metrics']]
+
+fn writes[sources]
+    return _named[sources, ['batch', 'put', 'commit', 'merge', 'sync']]
+
+fn _clean_line[line]
+    if '.runs/' in line
+        if '.co:' in line
+            pieces = split[line, '.co:']
+            rest = join[slice[pieces, 1, len[pieces]], '.co:']
+            return 'program line `rest`'
+    if starts[line, '@@cell ']
+        words = split[line, ' ']
+        n = int[words[1]]
+        if n.ok
+            return '── cell [`n + 1`] ──'
+        return line
+    if starts[line, '@@end ']
+        return '── end ──'
+    if starts[line, '@@name ']
+        return '   `slice[line, 7, len[line]]`'
+    return line
+
+--- what a run printed, its markers shown as the cells they begin
+fn cleaned[out]
+    lines = for line in split[out, '\n']
+        _clean_line[line]
+    return join[lines, '\n']
+
+test a_name_is_a_files[]
+    assert[slug['Price triage'] eq 'price_triage']
+    assert[slug['a/b..c'] eq 'a_b__c']
+
+test the_names_a_cell_assigns_are_found[]
+    assert[names[['xs = [1, 2]\nlog[xs]', 'a, b = 1, 2\n    c = 3\nxs = push[xs, 3]\nd.e = 1\nlog[\'x = y\']'], 2] eq ['xs', 'a', 'b']]
+    assert[names[['xs = 1', 'ys = 2'], 1] eq ['xs']]
+
+test the_program_marks_each_cell_and_names_what_is_left[]
+    src = program[['xs = [1, 2]', 'log[len[xs]]'], 2]
+    lines = split[src, '\n']
+    assert[len[lines] eq 6]
+    assert[lines[0] eq 'log[\'@@cell 0 \`float[now[]]\`\']']
+    assert[lines[1] eq 'xs = [1, 2]']
+    assert[lines[4] eq 'log[\'@@end \`float[now[]]\`\']']
+    assert[lines[5] eq 'log[\'@@name xs \`type[xs]\`\']']
+    assert[starts_at[['xs = [1, 2]', 'a\nb', ''], 3] eq [2, 4, 7]]
+
+test a_run_is_read_back_by_its_markers[]
+    out = '@@cell 0 100.000\n3\n@@cell 1 100.250\n300\n@@end 100.500\n@@name xs array'
+    firsts = [2, 4]
+    assert[outputs[out, 2, 'n', firsts] eq ['3', '300']]
+    assert[times[out, 2] eq [250, 250]]
+    assert[states[out, 2, 0, 'n', firsts] eq ['ok', 'ok']]
+    assert[kinds[out] eq ['xs array']]
+    assert[verdict[['ok', 'ok']] eq 'ok']
+
+test a_stop_is_its_cells_and_names_the_cells_line[]
+    out = '@@cell 0 100.000\n3\n@@cell 1 100.010\nruntime error: line 5: index 7 is out of range for an array of 3 items'
+    firsts = [2, 4]
+    assert[outputs[out, 3, 'n', firsts] eq ['3', 'runtime error: line 2: index 7 is out of range for an array of 3 items', '']]
+    assert[states[out, 3, 1, 'n', firsts] eq ['ok', 'error', 'skipped']]
+    assert[times[out, 3] eq [10, -1, -1]]
+    assert[verdict[states[out, 3, 1, 'n', firsts]] eq 'error']
+
+test a_refusal_is_shown_under_the_cell_it_names[]
+    out = '.runs/n.co:5:5: undefined function \'nosuch\'\n  5 │ log[nosuch[xs]]\n    │     ^^^^^^'
+    firsts = [2, 5]
+    shown = outputs[out, 2, 'n', firsts]
+    assert[shown[0] eq '']
+    assert[shown[1] eq 'line 1, column 5: undefined function \'nosuch\'\n  1 │ log[nosuch[xs]]\n    │     ^^^^^^']
+    assert[states[out, 2, 1, 'n', firsts] eq ['skipped', 'refused']]
+
+test a_cell_that_runs_too_long_is_stopped[]
+    out = '@@cell 0 100.000\nstarted'
+    assert[states[out, 1, 142, 'n', [2]] eq ['timeout']]
+
+test the_tables_a_notebook_reads_and_writes_are_named[]
+    cells = ['orders = magpie.latest[\'orders\']\nw = magpie.batch[\'by_item\', f, by = [\'item\']]', 's = magpie.summary[\'orders\', by = [\'item\']]\nn = magpie.head[\'_runs\']']
+    assert[reads[cells] eq ['orders', '_runs']]
+    assert[writes[cells] eq ['by_item']]
+
+test a_runs_output_shows_its_cells[]
+    assert[cleaned['@@cell 0 1.5\n3\n@@end 2.0\n@@name xs array'] eq '── cell [1] ──\n3\n── end ──\n   xs array']
+    assert[cleaned['.runs/n.page.co:10:5: undefined function'] eq 'program line 10:5: undefined function']

@@ -1,3 +1,18 @@
 /* the shell: the sidebar's links are text, not underlined */
 .side a { color: var(--crow-text); text-decoration: none; }
 .side a[aria-current="page"] { font-weight: 600; }
+
+/* a cell's editor writes Crow: the code face, wide and tall enough */
+.code textarea { font-family: ui-monospace, Menlo, monospace; font-size: 13px; width: 100%; min-height: 12em; }
+
+/* History holds two tables: the drawer is wide enough for them */
+.drawer { width: min(760px, 94vw); }
+
+/* a long line of a cell or of its output scrolls inside its card, never
+   past it: the page's columns may be narrower than their longest line */
+.main, .cells { min-width: 0; }
+.cells pre { overflow-x: auto; }
+
+/* a heading that begins a card, a drawer or a dialog needs no space above
+   it (the runtime's margin is for headings between paragraphs) */
+h2:first-child { margin-top: 0; }

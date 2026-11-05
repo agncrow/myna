@@ -1,0 +1,125 @@
+--- The workbench around every page: the sidebar with the mark, the
+--- workspace's name and the sections, and the top bar with where the page
+--- is, the search over the workspace's notebooks and tables, and the
+--- page's own actions.
+use web, ui
+use myna.workspace
+
+sought = ''
+--- moved by a handler that saves the workspace's name (Settings): the
+--- name is read from the settings log, a file no derivation follows, so
+--- the reader who saved it sees it at once and every other reader at the
+--- next refresh
+named = 0
+
+--- the workspace's name (Settings), and who is at the keyboard: Myna has
+--- no sign-in yet, so the one reader is the account it runs as
+derive place_name
+    seen = named
+    tick = now[]
+    return workspace.setting['workspace', 'Myna']
+
+derive who
+    return env['USER', 'you']
+
+--- the notebooks and tables whose names, or whose cells, hold the text
+--- searched for
+fn _notebooks_holding[q]
+    found = []
+    for n in workspace.names[]
+        hit = q in lower[n]
+        for s in workspace.sources[n]
+            if q in lower[s]
+                hit = true
+        if hit
+            found = push[found, n]
+    return found
+
+fn _tables_holding[q]
+    found = []
+    for t in workspace.tables[]
+        if q in lower[t]
+            found = push[found, t]
+    return found
+
+derive found_notebooks
+    q = lower[trim[sought]]
+    if q eq ''
+        return []
+    return _notebooks_holding[q]
+
+derive found_tables
+    q = lower[trim[sought]]
+    if q eq ''
+        return []
+    return _tables_holding[q]
+
+fn clear_find[]
+    sought = ''
+
+view mark[]
+    return row[
+        p['"', color = 'accent', weight = 'bold', font = 'mono'],
+        p['(o.o)', weight = 'bold', font = 'mono'],
+        p['"', color = 'accent', weight = 'bold', font = 'mono'],
+        gap = 'xs', align = 'center']
+
+view side_link[name, icon_name, href, on]
+    if on
+        return a[row[icon[icon_name], name, gap = 's', align = 'center'], href = href, surface = 'card', border = true, pad = 's', radius = 'm', weight = 'bold']
+    return a[row[icon[icon_name], name, gap = 's', align = 'center'], href = href, pad = 's', radius = 'm']
+
+view sidebar[section]
+    return stack[
+        row[mark[], stack[p['Myna', weight = 'bold'], p[place_name, color = 'muted', size = 'xs'], gap = 'xs'], gap = 's', align = 'center'],
+        side_link['Catalog', 'table', '/catalog', section eq 'Catalog'],
+        side_link['Query', 'search', '/query', section eq 'Query'],
+        side_link['Notebooks', 'edit', '/', section eq 'Notebooks'],
+        side_link['Dashboards', 'chart', '/dashboards', section eq 'Dashboards'],
+        side_link['Models', 'settings', '/models', section eq 'Models'],
+        side_link['Ask', 'mail', '/ask', section eq 'Ask'],
+        side_link['Jobs', 'clock', '/jobs', section eq 'Jobs'],
+        divider[],
+        side_link['Settings', 'settings', '/settings', section eq 'Settings'],
+        row[icon['user'], p['`who` · owner', color = 'muted', size = 'xs'], gap = 's', align = 'center'],
+        gap = 'xs', pad = 'm', width = '236px', background = 'surface', class = 'side']
+
+view _notebook_hit[name]
+    return a[row[icon['edit'], name, gap = 's', align = 'center'], href = '/?current=`name`']
+
+view _table_hit[name]
+    return a[row[icon['table'], name, gap = 's', align = 'center'], href = '/catalog?picked=`name`']
+
+--- what the search found, under the top bar while something is typed
+view results[]
+    if trim[sought] eq ''
+        return stack[]
+    books = for n in found_notebooks
+        _notebook_hit[n]
+    kept = for t in found_tables
+        _table_hit[t]
+    if len[books] + len[kept] eq 0
+        return row[p['nothing in the workspace holds “`trim[sought]`”', color = 'muted', size = 's'], button['Clear', click = clear_find], justify = 'between', align = 'center', pad = 's', surface = 'card', border = true]
+    return stack[
+        row[p['Found', weight = 'bold', size = 's'], button['Clear', click = clear_find], justify = 'between', align = 'center'],
+        row[p['Notebooks', color = 'muted', size = 's'], books, gap = 'm', wrap = true, align = 'center'],
+        row[p['Tables', color = 'muted', size = 's'], kept, gap = 'm', wrap = true, align = 'center'],
+        gap = 's', pad = 'm', surface = 'card', border = true]
+
+view topbar[where, actions]
+    return stack[
+        row[
+            p['`place_name` / `where`', color = 'muted', size = 'xs'],
+            row[field['Search', sought, type = 'text'], actions, gap = 's', align = 'center'],
+            justify = 'between', align = 'center'],
+        results[],
+        gap = 's']
+
+--- a page of the workbench: the sidebar, then the top bar over the
+--- page's body
+view screen[section, where, actions, body]
+    return row[
+        title['`where` · `place_name`'],
+        sidebar[section],
+        stack[topbar[where, actions], divider[], body, gap = 'm', pad = 'm', fill = 'true', class = 'main'],
+        gap = 'none', align = 'start']
