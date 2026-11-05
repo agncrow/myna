@@ -13,3 +13,5 @@ myna_data/
 *.swp
 *~
 __pycache__/
+# installed dependencies (crow install, pinned by crow.lock)
+crow_modules/
