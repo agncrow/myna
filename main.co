@@ -19,10 +19,13 @@ use myna.experiments
 use myna.runs
 use myna.models
 use myna.serving
+use myna.drawn
 
 workspace.ready[]
 
-serve[3800, wide = true, refresh = 10]
+--- (the workbench drawn in WebGL is a page built for the web: drawn/main.co,
+--- built into drawn/main_web, whose files the server answers)
+serve[3800, wide = true, refresh = 10, files = 'drawn/main_web']
 page['/', notebooks.render, url = ['notebooks.current', 'notebooks.naming']]
 page['/catalog', catalog.render, url = ['catalog.picked']]
 page['/jobs', jobs.render]
@@ -35,6 +38,14 @@ page['/compare', runs.compare, url = ['runs.runs', 'runs.x_key', 'runs.y_key']]
 page['/models', models.render, url = ['models.models_tab']]
 page['/models/:model_name', models.model_page, url = ['models.version']]
 page['/ask', soon.ask]
+
+--- the workbench drawn by Lory, and what it asks for (myna/drawn.co)
+route['/drawn', 'GET', drawn.h_drawn]
+route['/drawn/api/tables', 'GET', drawn.h_tables]
+route['/drawn/api/rows', 'GET', drawn.h_rows]
+route['/drawn/api/notebooks', 'GET', drawn.h_notebooks]
+route['/drawn/api/runs', 'GET', drawn.h_runs]
+route['/drawn/api/run-output', 'GET', drawn.h_run_output]
 
 --- MLflow's REST API, which its own client speaks (myna/mlapi.co)
 route['/version', 'GET', mlapi.h_version]

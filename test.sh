@@ -11,7 +11,7 @@ set -euo pipefail
 crow="${1:-crow}"
 cd "$(dirname "$0")"
 export MYNA_DATA=test_data
-parts="myna/workspace.co myna/engine.co myna/queries.co myna/query.co myna/tiles.co myna/dashboards.co myna/notebooks.co myna/catalog.co myna/jobs.co myna/settings.co myna/tracking.co myna/search.co myna/registry.co myna/traces.co myna/mlapi.co myna/charts.co myna/experiments.co myna/runs.co myna/serving.co myna/models.co"
+parts="myna/workspace.co myna/engine.co myna/queries.co myna/query.co myna/tiles.co myna/dashboards.co myna/notebooks.co myna/catalog.co myna/jobs.co myna/settings.co myna/tracking.co myna/search.co myna/registry.co myna/traces.co myna/mlapi.co myna/charts.co myna/experiments.co myna/runs.co myna/serving.co myna/models.co myna/drawn.co"
 for part in $parts; do
     echo "== $part"
     "$crow" test "$part"
@@ -21,6 +21,14 @@ for part in myna/query.co myna/dashboards.co myna/notebooks.co myna/catalog.co m
     "$crow" test --compiled "$part"
 done
 rm -rf test_data
+# the workbench drawn by Lory (drawn/main.co): its own tests, run where Lory
+# is installed beside it (crow install in drawn/)
+if [ -e drawn/crow_modules/lory ]; then
+    echo "== drawn/main.co"
+    (cd drawn && "$crow" test main.co)
+else
+    echo "== drawn/main.co skipped: Lory is not installed (crow install in drawn/)"
+fi
 # a model trained, tracked, registered, evaluated and served, every number
 # held to the same model trained in Python (needs scikit-learn: the venv
 # MLflow's client check uses, ~/.venvs/mlflow, or MYNA_PYTHON)

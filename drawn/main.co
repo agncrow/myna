@@ -1,0 +1,660 @@
+--- Myna drawn: the workbench drawn in WebGL by Lory, every control and
+--- chart on one canvas, the same on a desktop, a phone and in a headset.
+--- Built for the web (`crow build --target web main.co` here) and served by
+--- Myna at /drawn; what it shows it asks Myna's server for — the
+--- experiments, runs, metrics and models through MLflow's API, the
+--- workspace's tables, notebooks and jobs through myna/drawn.co — each
+--- answer arriving in a later frame. The runs of an experiment can be
+--- walked among in three dimensions: each run a ball placed by two of its
+--- parameters and its first metric, picked by the pointer or a
+--- controller's ray.
+use sys
+use math
+use memory
+use lory
+use lory.gui
+use lory.plot
+use lory.space
+
+--- what the workbench holds between frames: the tab shown, the requests
+--- asked (each once until a refresh), what the answers said, what is
+--- picked, and a line saying what is happening
+struct App [tab, asked, waiting, exps, exp_ids, exp_pick, runs, run_ids, run_keys, run_points, run_pick, metric, steps, values, models, tables, table_names, table_pick, table_cols, table_rows, books, book_sources, book_pick, jobs, job_runs, job_pick, job_output, status]
+
+--- a request to send: its id (what its answer is), method, address, body
+struct Ask [id, method, url, body]
+
+fn _no_rows[]
+    slice[[['']], 0, 0]
+
+fn _no_texts[]
+    slice[[''], 0, 0]
+
+fn _no_numbers[]
+    slice[[0.0], 0, 0]
+
+fn _no_points[]
+    slice[[[0.0, 0.0, 0.0]], 0, 0]
+
+fn _no_asks[]
+    slice[[Ask['', '', '', '']], 0, 0]
+
+fn fresh[]
+    App['experiments', _no_texts[], _no_asks[], _no_rows[], _no_texts[], -1, _no_rows[], _no_texts[], _no_rows[], _no_points[], -1, '', _no_numbers[], _no_numbers[], _no_rows[], _no_rows[], _no_texts[], -1, _no_texts[], _no_rows[], _no_rows[], _no_rows[], -1, _no_rows[], _no_texts[], -1, _no_texts[], 'asking Myna…']
+
+--- the tabs, by id and as the navigation shows them
+fn tabs[]
+    [['experiments', 'Experiments'], ['space', 'Runs in 3D'], ['models', 'Models'], ['catalog', 'Catalog'], ['notebooks', 'Notebooks'], ['jobs', 'Jobs']]
+
+--- ---- asking ----
+
+--- a request, once: asked again only after a refresh
+fn asked[a, id, method, url, body]
+    if id in a.asked
+        return a
+    a.asked = push[a.asked, id]
+    a.waiting = push[a.waiting, Ask[id, method, url, body]]
+    a
+
+--- what the tab shown needs, asked
+fn wants[a]
+    if a.tab eq 'experiments' or a.tab eq 'space'
+        a = asked[a, 'exps', 'GET', '/api/2.0/mlflow/experiments/search?max_results=200', '']
+        if a.exp_pick gte 0
+            exp_id = a.exp_ids[a.exp_pick]
+            a = asked[a, 'runs:`exp_id`', 'POST', '/api/2.0/mlflow/runs/search', '{"experiment_ids": ["`exp_id`"], "max_results": 500}']
+            if a.run_pick gte 0 and a.metric ne ''
+                run = a.run_ids[a.run_pick]
+                a = asked[a, 'hist:`run`:`a.metric`', 'GET', '/api/2.0/mlflow/metrics/get-history?run_id=`run`&metric_key=`a.metric`', '']
+    if a.tab eq 'models'
+        a = asked[a, 'models', 'GET', '/api/2.0/mlflow/registered-models/search?max_results=200', '']
+    if a.tab eq 'catalog'
+        a = asked[a, 'tables', 'GET', '/drawn/api/tables', '']
+        if a.table_pick gte 0
+            name = a.table_names[a.table_pick]
+            a = asked[a, 'rows:`name`', 'GET', '/drawn/api/rows?name=`name`&n=200', '']
+    if a.tab eq 'notebooks'
+        a = asked[a, 'books', 'GET', '/drawn/api/notebooks', '']
+    if a.tab eq 'jobs'
+        a = asked[a, 'jobs', 'GET', '/drawn/api/runs', '']
+        if a.job_pick gte 0
+            run = a.job_runs[a.job_pick]
+            a = asked[a, 'out:`run`', 'GET', '/drawn/api/run-output?run=`run`', '']
+    a
+
+--- the canvas given the requests waiting
+fn sent[c, a]
+    for q in a.waiting
+        c = lory.request[c, q.id, q.method, q.url, q.body]
+    c
+
+--- ---- answers ----
+
+fn _plain[v]
+    '`v`'
+
+--- a number a parsed value holds (a number, or text of one), else nan
+fn _number[v]
+    n = float['`v`']
+    if n.ok
+        return n
+    return nan
+
+--- the experiments, as a table's rows
+fn read_exps[a, j]
+    a.exps = _no_rows[]
+    a.exp_ids = _no_texts[]
+    if 'experiments' in j
+        for x in j.experiments
+            a.exps = push[a.exps, [_plain[x.name], _plain[x.experiment_id], _plain[x.lifecycle_stage]]]
+            a.exp_ids = push[a.exp_ids, _plain[x.experiment_id]]
+    a
+
+--- a run's value of `key` among its pairs (`metrics` or `params`), else nan
+fn _value_of[pairs, key]
+    for p in pairs
+        if _plain[p.key] eq key
+            return _number[p.value]
+    nan
+
+--- the runs of an experiment: a row each (name, status, its metrics), and
+--- each run's place in three dimensions
+fn read_runs[a, j]
+    a.runs = _no_rows[]
+    a.run_ids = _no_texts[]
+    a.run_keys = _no_rows[]
+    a.run_points = _no_points[]
+    if 'runs' not in j
+        return a
+    --- (the first two parameters and the first metric any run has place
+    --- the runs in space)
+    params = _no_texts[]
+    metrics = _no_texts[]
+    for r in j.runs
+        if 'params' in r.data
+            for p in r.data.params
+                if _plain[p.key] not in params
+                    params = push[params, _plain[p.key]]
+        if 'metrics' in r.data
+            for m in r.data.metrics
+                if _plain[m.key] not in metrics
+                    metrics = push[metrics, _plain[m.key]]
+    for r in j.runs
+        mine = _no_texts[]
+        shown = _no_texts[]
+        if 'metrics' in r.data
+            for m in r.data.metrics
+                mine = push[mine, _plain[m.key]]
+                shown = push[shown, '`m.key` `fmt[_number[m.value], decimals = 4]`']
+        name = _plain[r.info.run_id]
+        if 'run_name' in r.info
+            name = _plain[r.info.run_name]
+        a.runs = push[a.runs, [name, _plain[r.info.status], join[shown, ', ']]]
+        a.run_ids = push[a.run_ids, _plain[r.info.run_id]]
+        a.run_keys = push[a.run_keys, mine]
+        x = nan
+        z = nan
+        y = nan
+        if 'params' in r.data
+            if len[params] gt 0
+                x = _value_of[r.data.params, params[0]]
+            if len[params] gt 1
+                z = _value_of[r.data.params, params[1]]
+        if 'metrics' in r.data and len[metrics] gt 0
+            y = _value_of[r.data.metrics, metrics[0]]
+        a.run_points = push[a.run_points, [x, y, z]]
+    a
+
+--- a metric's history: its steps and values
+fn read_history[a, j]
+    a.steps = _no_numbers[]
+    a.values = _no_numbers[]
+    if 'metrics' in j
+        for m in j.metrics
+            a.steps = push[a.steps, _number[m.step]]
+            a.values = push[a.values, _number[m.value]]
+    a
+
+fn read_models[a, j]
+    a.models = _no_rows[]
+    if 'registered_models' in j
+        for m in j.registered_models
+            latest = ''
+            if 'latest_versions' in m
+                for v in m.latest_versions
+                    latest = 'version `v.version`'
+            a.models = push[a.models, [_plain[m.name], latest]]
+    a
+
+fn read_tables[a, j]
+    a.tables = _no_rows[]
+    a.table_names = _no_texts[]
+    for t in j
+        cols = _no_texts[]
+        for c in t.columns
+            cols = push[cols, _plain[c]]
+        a.tables = push[a.tables, [_plain[t.name], _plain[t.rows], join[cols, ', '], _plain[t.origin]]]
+        a.table_names = push[a.table_names, _plain[t.name]]
+    a
+
+--- a table's newest rows: the columns of the first, then each row's cells
+--- in that order
+fn read_rows[a, j]
+    a.table_cols = _no_texts[]
+    a.table_rows = _no_rows[]
+    if len[j] eq 0
+        return a
+    for k in names_of[j[0]]
+        if k ne '_pos'
+            a.table_cols = push[a.table_cols, k]
+    for r in j
+        cells = _no_texts[]
+        for k in a.table_cols
+            cells = push[cells, _plain[r[k]]]
+        a.table_rows = push[a.table_rows, cells]
+    a
+
+--- the names of a parsed object's fields, in order
+fn names_of[o]
+    found = _no_texts[]
+    for k in keys[o]
+        found = push[found, k]
+    found
+
+fn read_books[a, j]
+    a.books = _no_rows[]
+    a.book_sources = _no_rows[]
+    for b in j
+        every = 'by hand'
+        if _number[b.every] gt 0.0
+            every = 'every `b.every` s'
+        srcs = _no_texts[]
+        for s in b.sources
+            srcs = push[srcs, _plain[s]]
+        a.books = push[a.books, [_plain[b.name], str[len[srcs]], every, _plain[b.next]]]
+        a.book_sources = push[a.book_sources, srcs]
+    a
+
+fn read_jobs[a, j]
+    a.jobs = _no_rows[]
+    a.job_runs = _no_texts[]
+    for r in j
+        a.jobs = push[a.jobs, [_plain[r.run], _plain[r.notebook], _plain[r.at], _plain[r.status], '`r.ms` ms']]
+        a.job_runs = push[a.job_runs, _plain[r.run]]
+    a
+
+--- an answer read into the workbench, by what was asked
+fn answered[a, id, status, body]
+    if status ne 200
+        a.status = '`id`: Myna answered `status`'
+        return a
+    a.status = ''
+    what = split[id, ':'][0]
+    if what eq 'out'
+        a.job_output = split[body, '\n']
+        return a
+    j = json[body]
+    if what eq 'exps'
+        return read_exps[a, j]
+    if what eq 'runs'
+        return read_runs[a, j]
+    if what eq 'hist'
+        return read_history[a, j]
+    if what eq 'models'
+        return read_models[a, j]
+    if what eq 'tables'
+        return read_tables[a, j]
+    if what eq 'rows'
+        return read_rows[a, j]
+    if what eq 'books'
+        return read_books[a, j]
+    if what eq 'jobs'
+        return read_jobs[a, j]
+    a
+
+--- every answer the frame brings
+fn heard[a, c]
+    for s in lory.said[c]
+        if _plain[s.what] eq 'answer'
+            if 'failed' in s
+                a.status = 'Myna did not answer: `s.failed`'
+            else
+                a = answered[a, _plain[s.id], int[_number[s.status]], _plain[s.body]]
+    a
+
+--- ---- the view ----
+
+fn nav[a]
+    buttons = [gui.heading['Myna']]
+    for t in tabs[]
+        words = t[1]
+        if t[0] eq a.tab
+            words = '› `t[1]`'
+        buttons = push[buttons, gui.button['tab:`t[0]`', words]]
+    buttons = push[buttons, gui.space[12.0]]
+    buttons = push[buttons, gui.button['refresh', 'Refresh']]
+    gui.sized[gui.panel[buttons], 200.0]
+
+fn experiments_view[a]
+    parts = [gui.heading['Experiments'], gui.chosen[gui.table['exps', ['experiment', 'id', 'stage'], a.exps, 150.0], a.exp_pick]]
+    if a.exp_pick gte 0
+        parts = push[parts, gui.heading['Runs of `a.exps[a.exp_pick][0]`']]
+        parts = push[parts, gui.chosen[gui.table['runs', ['run', 'status', 'metrics'], a.runs, 170.0], a.run_pick]]
+    if a.run_pick gte 0 and a.run_pick lt len[a.run_keys]
+        choices = a.run_keys[a.run_pick]
+        if len[choices] gt 0
+            parts = push[parts, gui.row[[gui.label['Metric'], gui.select['metric', choices, a.metric]]]]
+            parts = push[parts, gui.area['history', 0.0, 240.0]]
+        else
+            parts = push[parts, gui.note['This run logged no metrics.']]
+    gui.panel[parts]
+
+fn space_view[a]
+    parts = [gui.heading['Runs in 3D'], gui.select['space_exp', _names[a.exps], _picked_name[a]]]
+    if a.exp_pick lt 0
+        parts = push[parts, gui.note['Pick an experiment: each of its runs is a ball, placed by its first two parameters and its first metric (up).']]
+    else
+        words = 'Drag to turn, the wheel to come nearer; the pointer or a controller picks a run.'
+        if a.run_pick gte 0 and a.run_pick lt len[a.runs]
+            r = a.runs[a.run_pick]
+            words = '`r[0]` — `r[1]` — `r[2]`'
+        parts = push[parts, gui.note[words]]
+        parts = push[parts, gui.area['space', 0.0, 420.0]]
+    --- (a column, not a panel: the scene is drawn under the flat drawing,
+    --- and a panel's ground would hide it)
+    gui.column[parts]
+
+fn _names[rows]
+    found = _no_texts[]
+    for r in rows
+        found = push[found, r[0]]
+    found
+
+fn _picked_name[a]
+    if a.exp_pick gte 0 and a.exp_pick lt len[a.exps]
+        return a.exps[a.exp_pick][0]
+    ''
+
+fn models_view[a]
+    gui.panel[[gui.heading['Models'], gui.table['models', ['model', 'latest'], a.models, 400.0]]]
+
+fn catalog_view[a]
+    parts = [gui.heading['Catalog'], gui.chosen[gui.table['tables', ['table', 'rows', 'columns', 'origin'], a.tables, 180.0], a.table_pick]]
+    if a.table_pick gte 0 and len[a.table_cols] gt 0
+        parts = push[parts, gui.heading['Newest rows of `a.table_names[a.table_pick]`']]
+        parts = push[parts, gui.table['rows', a.table_cols, a.table_rows, 300.0]]
+    gui.panel[parts]
+
+fn notebooks_view[a]
+    parts = [gui.heading['Notebooks'], gui.chosen[gui.table['books', ['notebook', 'cells', 'runs', 'next'], a.books, 180.0], a.book_pick]]
+    if a.book_pick gte 0 and a.book_pick lt len[a.book_sources]
+        parts = push[parts, gui.heading[a.books[a.book_pick][0]]]
+        for s in a.book_sources[a.book_pick]
+            for one in split[s, '\n']
+                parts = push[parts, gui.note[one]]
+            parts = push[parts, gui.space[8.0]]
+    gui.panel[parts]
+
+fn jobs_view[a]
+    parts = [gui.heading['Jobs'], gui.chosen[gui.table['jobs', ['run', 'notebook', 'at', 'status', 'took'], a.jobs, 220.0], a.job_pick]]
+    if a.job_pick gte 0
+        parts = push[parts, gui.heading['What run `a.job_runs[a.job_pick]` wrote']]
+        for one in a.job_output
+            parts = push[parts, gui.note[one]]
+    gui.panel[parts]
+
+--- the page: the navigation, then the tab shown across the rest of `wide`
+--- and scrolled within `tall` (the canvas's size, less its margins)
+fn page_of[a, wide, tall]
+    shown = experiments_view[a]
+    if a.tab eq 'space'
+        shown = space_view[a]
+    if a.tab eq 'models'
+        shown = models_view[a]
+    if a.tab eq 'catalog'
+        shown = catalog_view[a]
+    if a.tab eq 'notebooks'
+        shown = notebooks_view[a]
+    if a.tab eq 'jobs'
+        shown = jobs_view[a]
+    words = a.status
+    if words eq ''
+        words = ' '
+    gui.row[[nav[a], gui.sized[gui.scroll['page:`a.tab`', max[200.0, tall], [shown, gui.note[words]]], max[320.0, wide - 216.0]]]]
+
+--- ---- what the reader did ----
+
+fn _index_of[xs, x]
+    for i in range[len[xs]]
+        if xs[i] eq x
+            return i
+    -1
+
+fn applied[a, ev]
+    if starts[ev.id, 'tab:']
+        a.tab = slice[ev.id, 4, len[ev.id]]
+    if ev.id eq 'refresh'
+        a.asked = _no_texts[]
+    if ev.id eq 'exps' or ev.id eq 'space_exp'
+        pick = int[ev.num]
+        if ev.id eq 'space_exp'
+            pick = _index_of[_names[a.exps], ev.words]
+        if pick ne a.exp_pick
+            a.exp_pick = pick
+            a.run_pick = -1
+            a.metric = ''
+            a.runs = _no_rows[]
+            a.run_points = _no_points[]
+    if ev.id eq 'runs'
+        a.run_pick = int[ev.num]
+        a.metric = ''
+        a.steps = _no_numbers[]
+        a.values = _no_numbers[]
+        if a.run_pick lt len[a.run_keys] and len[a.run_keys[a.run_pick]] gt 0
+            a.metric = a.run_keys[a.run_pick][0]
+    if ev.id eq 'metric'
+        a.metric = ev.words
+        a.steps = _no_numbers[]
+        a.values = _no_numbers[]
+    if ev.id eq 'tables'
+        a.table_pick = int[ev.num]
+        a.table_cols = _no_texts[]
+        a.table_rows = _no_rows[]
+    if ev.id eq 'books'
+        a.book_pick = int[ev.num]
+    if ev.id eq 'jobs'
+        a.job_pick = int[ev.num]
+        a.job_output = _no_texts[]
+    a
+
+--- ---- drawn into the areas ----
+
+--- a metric's history charted into its box
+fn history_drawn[c, a, box]
+    if len[a.steps] eq 0
+        return lory.text[c, box[0] + 12.0, box[1] + 20.0, 'asking for the history…', 14.0 * lory.px[c], gui.dark[].muted]
+    x0 = a.steps[0]
+    x1 = a.steps[len[a.steps] - 1]
+    if x1 lte x0
+        x1 = x0 + 1.0
+    --- (room on the right for the values' labels and below for the steps')
+    s = lory.px[c]
+    k = plot.chart[c, 'history', box[0], box[1], box[2] - 56.0 * s, box[3] - 28.0 * s, x0, x1]
+    k = plot.fit_line[k, plot.lines[a.steps, a.values]]
+    c = plot.grid[c, k]
+    c = plot.line[c, k, plot.lines[a.steps, a.values], lory.hex['#f6c343'], 2.0]
+    c = plot.axes[c, k]
+    plot.crosshair[c, k]
+
+--- a value's place in [-1, 1] among the values `vs`: nan is the middle
+fn _spread[v, vs]
+    lo = 0.0
+    hi = 0.0
+    first = true
+    for x in vs
+        if x eq x
+            if first or x lt lo
+                lo = x
+            if first or x gt hi
+                hi = x
+            first = false
+    if v ne v or hi lte lo
+        return 0.0
+    (v - lo) / (hi - lo) * 2.0 - 1.0
+
+--- the runs as balls in space: the screen's box (or, in a headset, a
+--- metre and a half in front of the reader), picked by the ray
+fn space_drawn[c, a, box]
+    c = space.within[c, box]
+    if not space.made['run']
+        c = space.mesh[c, 'run', space.sphere[0.05, 12]]
+        c = space.mesh[c, 'floor', space.ground[2.4, 2.4]]
+    cam = space.orbit[c, 'myna.runs', [0.0, 0.0, 0.0], 3.2]
+    c = space.walk[c, 'myna.reader']
+    c = space.scene[c, cam, space.daylight[]]
+    c = space.draw[c, 'floor', lory.translation[0.0, -1.1, 0.0], space.plain[lory.hex['#2b3440']]]
+    xs = for p in a.run_points
+        p[0]
+    ys = for p in a.run_points
+        p[1]
+    zs = for p in a.run_points
+        p[2]
+    ray = space.ray[c, cam]
+    for i in range[len[a.run_points]]
+        p = a.run_points[i]
+        at = lory.translation[_spread[p[0], xs], _spread[p[1], ys], _spread[p[2], zs]]
+        color = lory.hex['#3b82f6']
+        if i eq a.run_pick
+            color = lory.hex['#f6c343']
+        else
+            if space.hit[ray, 'run', at] gte 0.0
+                color = lory.hex['#93c5fd']
+        c = space.draw[c, 'run', at, space.plain[color]]
+    c
+
+--- which run the ray picked this frame, if a press began on one
+fn space_pick[a, c]
+    if a.tab ne 'space' or a.exp_pick lt 0 or len[a.run_points] eq 0
+        return a
+    pressed = false
+    for ev in lory.events[c]
+        if ev.on eq 'down'
+            pressed = true
+    if not pressed
+        return a
+    cam = space.orbit[c, 'myna.runs', [0.0, 0.0, 0.0], 3.2]
+    ray = space.ray[c, cam]
+    xs = for p in a.run_points
+        p[0]
+    ys = for p in a.run_points
+        p[1]
+    zs = for p in a.run_points
+        p[2]
+    best = -1
+    near = 0.0
+    for i in range[len[a.run_points]]
+        p = a.run_points[i]
+        d = space.hit[ray, 'run', lory.translation[_spread[p[0], xs], _spread[p[1], ys], _spread[p[2], zs]]]
+        if d gte 0.0 and (best lt 0 or d lt near)
+            best = i
+            near = d
+    if best gte 0
+        a.run_pick = best
+    a
+
+--- ---- a frame ----
+
+fn picture[c, a]
+    c = lory.clear[c, gui.dark[].page]
+    s = lory.px[c]
+    shown = gui.show[c, page_of[a, lory.width[c] / s - 48.0, lory.height[c] / s - 48.0]]
+    c = shown.canvas
+    --- (the scene in the area the page left it: drawn before the flat
+    --- drawing however late it is asked for)
+    if a.tab eq 'space' and a.exp_pick gte 0 and 'space' in shown.boxes
+        cut = _within[shown.boxes['space'], shown.boxes['page:space']]
+        --- (scrolled out of sight, it is not drawn: no box is the whole canvas)
+        if cut[2] gt 0.0 and cut[3] gt 0.0
+            c = space_drawn[c, a, cut]
+    if a.tab eq 'experiments' and 'history' in shown.boxes
+        --- (inside the scrolled page's box, as the controls are)
+        kept = lory.clipped[c]
+        page = shown.boxes['page:experiments']
+        c = lory.clip[c, page[0], page[1], page[2], page[3]]
+        c = history_drawn[c, a, shown.boxes['history']]
+        c = lory.unclip[c, kept]
+    Drawn[c, shown.events]
+
+--- the part of a box (left, top, width, height) inside another: the
+--- scene's area, cut to the scrolled page it lies in
+fn _within[box, outer]
+    x0 = max[box[0], outer[0]]
+    y0 = max[box[1], outer[1]]
+    x1 = min[box[0] + box[2], outer[0] + outer[2]]
+    y1 = min[box[1] + box[3], outer[1] + outer[3]]
+    [x0, y0, max[0.0, x1 - x0], max[0.0, y1 - y0]]
+
+test a_box_is_cut_to_the_box_it_lies_in[]
+    _within[[10.0, 50.0, 100.0, 100.0], [0.0, 0.0, 200.0, 120.0]] eq [10.0, 50.0, 100.0, 70.0]
+    _within[[10.0, 500.0, 100.0, 100.0], [0.0, 0.0, 200.0, 120.0]][3] eq 0.0
+
+--- a frame drawn: the canvas and what the reader did on it
+struct Drawn [c, events]
+
+fn step[c, a]
+    a = heard[a, c]
+    d = picture[c, a]
+    --- (picked through the scene's box, which drawing set)
+    a = space_pick[a, d.c]
+    for ev in d.events
+        a = applied[a, ev]
+    a.waiting = _no_asks[]
+    a = wants[a]
+    Stepped[sent[d.c, a], a]
+
+struct Stepped [c, a]
+
+fn draw[frame]
+    a = recall['myna.drawn', fresh[]]
+    s = step[lory.begin[frame], a]
+    remember['myna.drawn', s.a]
+    lory.end[lory.title[s.c, 'Myna']]
+
+sys.frames[draw]
+
+--- ---- tests ----
+
+fn _frame[given, said]
+    json['{"t": 0, "width": 1200, "height": 800, "ratio": 1, "xr": false, "views": [{"eye": "none", "x": 0, "y": 0, "width": 1200, "height": 800, "projection": [], "camera": []}], "input": [`given`], "pointers": [], "controllers": [], "said": [`said`]}']
+
+fn _answer[id, body]
+    '{"what": "answer", "id": "`id`", "status": 200, "body": `encode[body]`}'
+
+fn _requests[c]
+    found = _no_texts[]
+    for call in lory.batch[c]
+        if call[0] eq '@request'
+            found = push[found, slice[call[1], 1, len[call[1]]]]
+    found
+
+test the_first_frame_asks_for_the_experiments_once[]
+    first = step[lory.begin[_frame['', '']], fresh[]]
+    'exps' in _requests[first.c]
+    second = step[lory.begin[_frame['', '']], first.a]
+    len[_requests[second.c]] eq 0
+
+test an_answer_fills_the_experiments_and_picking_one_asks_for_its_runs[]
+    body = '{"experiments": [{"experiment_id": "1", "name": "houses", "lifecycle_stage": "active"}]}'
+    s = step[lory.begin[_frame['', _answer['exps', body]]], fresh[]]
+    s.a.exps eq [['houses', '1', 'active']]
+    a = applied[s.a, gui.Event['exps', 'choose', 'houses', 0.0]]
+    a = wants[a]
+    last = a.waiting[len[a.waiting] - 1]
+    last.id eq 'runs:1'
+    last.method eq 'POST'
+
+test the_runs_are_read_with_their_metrics_and_places[]
+    body = '{"runs": [{"info": {"run_id": "r1", "run_name": "small", "status": "FINISHED"}, "data": {"metrics": [{"key": "rmse", "value": 0.5}], "params": [{"key": "depth", "value": "3"}, {"key": "rate", "value": "0.1"}]}}, {"info": {"run_id": "r2", "run_name": "big", "status": "FINISHED"}, "data": {"metrics": [{"key": "rmse", "value": 0.25}], "params": [{"key": "depth", "value": "6"}, {"key": "rate", "value": "0.2"}]}}]}'
+    a = read_runs[fresh[], json[body]]
+    a.run_ids eq ['r1', 'r2']
+    a.runs[0][0] eq 'small'
+    a.runs[1][2] eq 'rmse 0.2500'
+    a.run_points[1] eq [6.0, 0.25, 0.2]
+    _spread[6.0, [3.0, 6.0]] eq 1.0
+    _spread[3.0, [3.0, 6.0]] eq -1.0
+
+test a_run_picked_asks_for_its_first_metrics_history_and_charts_it[]
+    a = fresh[]
+    a.exp_ids = ['1']
+    a.exps = [['houses', '1', 'active']]
+    a.exp_pick = 0
+    a = read_runs[a, json['{"runs": [{"info": {"run_id": "r1", "status": "FINISHED"}, "data": {"metrics": [{"key": "rmse", "value": 0.5}]}}]}']]
+    a = applied[a, gui.Event['runs', 'choose', 'r1', 0.0]]
+    a.metric eq 'rmse'
+    a = wants[a]
+    asks = for q in a.waiting
+        q.id
+    'hist:r1:rmse' in asks
+    a = read_history[a, json['{"metrics": [{"key": "rmse", "value": 0.9, "step": 0}, {"key": "rmse", "value": 0.5, "step": 1}]}']]
+    a.values eq [0.9, 0.5]
+    --- (the chart's line is drawn into the canvas's vertices: more of them
+    --- than the controls alone make)
+    bare = fresh[]
+    plain = picture[lory.begin[_frame['', '']], bare]
+    d = picture[lory.begin[_frame['', '']], a]
+    len[d.c.verts] gt len[plain.c.verts]
+
+test the_catalog_reads_a_tables_rows_in_its_columns_order[]
+    a = read_tables[fresh[], json['[{"name": "orders", "rows": 2, "columns": ["item", "qty"], "origin": "notebooks"}]']]
+    a.tables eq [['orders', '2', 'item, qty', 'notebooks']]
+    a = read_rows[a, json['[{"item": "apples", "qty": 3, "_pos": 0}, {"item": "pears", "qty": 5, "_pos": 1}]']]
+    a.table_cols eq ['item', 'qty']
+    a.table_rows eq [['apples', '3'], ['pears', '5']]
+
+test a_tab_pressed_shows_it_and_asks_for_what_it_needs[]
+    a = applied[fresh[], gui.Event['tab:jobs', 'press', '', 0.0]]
+    a.tab eq 'jobs'
+    a = wants[a]
+    asks = for q in a.waiting
+        q.id
+    'jobs' in asks

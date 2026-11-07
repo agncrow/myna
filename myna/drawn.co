@@ -1,0 +1,104 @@
+--- The drawn workbench's door: what Myna's pages show, as JSON, for the
+--- workbench drawn in WebGL by Lory (drawn/main.co, built for the web and
+--- served at /drawn). The experiments, runs, metrics and models it reads
+--- through MLflow's API (myna/mlapi.co), which the server already
+--- answers; the workspace's own — its tables, a table's newest rows, the
+--- notebooks and their cells, the scheduled notebooks and every run —
+--- here, from the same functions the HTML pages read.
+use web, frame, magpie
+use myna.workspace
+use myna.engine
+
+--- a table of the workspace: its name, how many rows it holds, its
+--- columns as the reader wrote them, and whose it is (`notebooks`, or
+--- `Myna` for the workspace's own)
+struct Table [name, rows, columns, origin]
+
+--- a notebook: its name, its cells' ids and sources in order, how often
+--- it runs (seconds, 0 for by hand) and when it runs next
+struct Notebook [name, cells, sources, every, next]
+
+fn _origin[name]
+    if starts[name, '_']
+        return 'Myna'
+    return 'notebooks'
+
+fn _columns[name]
+    found = []
+    for c in workspace.table_columns[name]
+        if c ne '_pos'
+            found = push[found, c]
+    return found
+
+--- every table, as the catalog lists them
+fn api_tables[]
+    found = []
+    for n in workspace.tables[]
+        found = push[found, Table[n, workspace.table_count[n], _columns[n], _origin[n]]]
+    return found
+
+--- the newest `n` rows of a table, at most 1000
+fn api_rows[name, n]
+    return workspace.table_rows[name, max[1, min[n, 1000]]]
+
+--- every notebook with its cells
+fn api_notebooks[]
+    found = []
+    for n in workspace.names[]
+        found = push[found, Notebook[n, workspace.ids[n], workspace.sources[n], workspace.every[n], workspace.due[n]]]
+    return found
+
+fn h_tables[req]
+    return json[api_tables[]]
+
+fn h_rows[req]
+    name = '`req.query.name`'
+    if name not in workspace.tables[]
+        return respond[404, 'no table is named `name`']
+    count = 200
+    if 'n' in req.query
+        asked = int['`req.query.n`']
+        if asked.ok
+            count = asked
+    return json[api_rows[name, count]]
+
+fn h_notebooks[req]
+    return json[api_notebooks[]]
+
+fn h_runs[req]
+    return json[workspace.runs['']]
+
+--- what a run wrote, as the jobs page shows it
+fn h_run_output[req]
+    run = int['`req.query.run`']
+    if not run.ok
+        return respond[400, 'a run is named by its number']
+    return text[engine.cleaned[workspace.run_output[run]]]
+
+--- the drawn workbench's address: its page lies in drawn/main_web, which
+--- the server's files answer
+fn h_drawn[req]
+    return redirect['/index.html']
+
+test the_drawn_workbench_reads_the_workspace_as_the_pages_do[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    w = magpie.batch['`workspace.home[]`/orders', frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 8]], by = ['item']]
+    put = workspace.put_cell['sales', 1, 'x = 1', true, '2026-11-07T10:00:00Z']
+    tables = api_tables[]
+    named = for t in tables
+        t.name
+    'orders' in named
+    for t in tables
+        if t.name eq 'orders'
+            assert[t.rows eq 3]
+            assert[t.columns eq ['item', 'qty']]
+            assert[t.origin eq 'notebooks']
+    rows = api_rows['orders', 2]
+    assert[len[rows] eq 2]
+    books = api_notebooks[]
+    assert[len[books] eq 1]
+    assert[books[0].name eq 'sales']
+    assert[books[0].sources eq ['x = 1']]
+    gone = rm[workspace.home[]]

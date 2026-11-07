@@ -18,3 +18,5 @@ docs/book/crow-site/
 __pycache__/
 # installed dependencies (crow install, pinned by crow.lock)
 crow_modules/
+# the drawn workbench crow build --target web writes (drawn/main_web)
+*_web/
