@@ -1,9 +1,9 @@
 --- The Myna Book, rendered by Crow as Crow's and Magpie's books are:
 --- Markdown chapters in (docs/book/src), a static site out
 --- (docs/book/crow-site), published under the article at
---- agncrow.github.io/myna-site/book/ by scripts/publish_site.sh, which
---- pushes the pages to the public agncrow/myna-site repository (Myna's
---- own stays private). Run from the repository's root:
+--- agncrow.github.io/myna/book/ by .github/workflows/pages.yml (the
+--- repository is private, its Pages site public). Run from the
+--- repository's root:
 ---
 ---   crow run -i docs/book/site.co    --- writes every page
 ---   crow test docs/book/site.co      --- the page layout, no browser

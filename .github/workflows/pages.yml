@@ -1,0 +1,66 @@
+# The article introducing Myna (site/index.html) and the Myna Book
+# (docs/book, rendered by docs/book/site.co), published on GitHub Pages —
+# the article at https://agncrow.github.io/myna/, the book under it at
+# /book/ — on every push to main that touches either or the icons. The
+# repository is private; its Pages site is public (the organization's plan
+# serves Pages from a private repository).
+#
+# No step runs a JavaScript action, so the workflow needs no Node.js: the
+# commit is fetched with git, the book rendered by the released crow (the
+# interpreter, so no Rust), and the site pushed as the one commit of the
+# `gh-pages` branch, which the repository's Pages serve (Settings → Pages →
+# Deploy from a branch: gh-pages, /), as Magpie's and crow's books are.
+name: Pages
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', 'assets/**', 'docs/**', 'LICENSE', 'LICENSING.md', '.github/workflows/pages.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+env:
+  CROW_VERSION: "0.8.0"
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: The repository at this commit
+        run: |
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')" fetch -q --depth 1 --no-tags origin "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+      - name: Crow, the release that renders the book
+        run: |
+          f="crow-$CROW_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLO "https://github.com/agncrow/crow/releases/download/v$CROW_VERSION/$f"
+          curl -fsSLO "https://github.com/agncrow/crow/releases/download/v$CROW_VERSION/$f.sha256"
+          sha256sum -c "$f.sha256"
+          mkdir -p "$RUNNER_TEMP/crow" && tar -xzf "$f" -C "$RUNNER_TEMP/crow" && rm "$f" "$f.sha256"
+          "$RUNNER_TEMP/crow/crow" --version
+      - name: The article, the book and their icons
+        run: |
+          "$RUNNER_TEMP/crow/crow" run -i docs/book/site.co
+          mkdir -p out/book
+          cp site/index.html out/
+          cp -R site/shots out/shots
+          cp assets/myna.svg assets/favicon.ico assets/apple-touch-icon.png assets/myna-social.png out/
+          cp -R docs/book/crow-site/. out/book/
+          test -s out/index.html && test -s out/book/index.html && test -s out/book/logging.html && test -s out/book/LICENSE.txt
+          n=$(find out/book -name '*.html' | wc -l); echo "$n book pages"; test "$n" -ge 18
+      # the site as the one commit of gh-pages (no history kept: each push
+      # is the whole site), served as it is written (.nojekyll)
+      - name: Publish the site to the gh-pages branch
+        run: |
+          cd out
+          touch .nojekyll
+          git init -q
+          git checkout -q -b gh-pages
+          git add -A
+          git -c user.name="myna pages" -c user.email="myna-pages@users.noreply.github.com" commit -q -m "The site at $GITHUB_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')" push -q --force "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" gh-pages

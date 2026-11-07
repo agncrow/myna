@@ -9,10 +9,11 @@ state a Magpie log. Everything but the model to ask is built, and its
 page says so. Experiments and Models do what MLflow does, and answer
 MLflow's own client.
 
-**The article and the Myna Book:** <https://agncrow.github.io/myna-site/>
+**The article and the Myna Book:** <https://agncrow.github.io/myna/>
 (the book's chapters are `docs/book/src`, rendered by
-`docs/book/site.co`; `scripts/publish_site.sh` publishes both to the
-public `agncrow/myna-site` repository, while this one stays private).
+`docs/book/site.co`; `.github/workflows/pages.yml` publishes both on
+every push to main that touches them. The repository is private, its
+site public).
 
 Myna needs Crow 0.8.0 or later and installs Magpie as any dependency.
 From this folder:
@@ -127,8 +128,8 @@ a running Myna.
   `myna/settings.co` are the pages; `myna/soon.co` holds the pages not
   built yet.
 - `scheduler.co` is the scheduler.
-- `docs/book/` is the Myna Book and `site/` the article; `scripts/publish_site.sh`
-  publishes them.
+- `docs/book/` is the Myna Book and `site/` the article;
+  `.github/workflows/pages.yml` publishes them.
 
 The design, the screens and the plan: the architecture document and the
 design canvas (private for now). The name: the myna, the clever talking
