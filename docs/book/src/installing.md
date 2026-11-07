@@ -1,16 +1,26 @@
 # Installing and Running Myna
 
-Myna needs Crow 0.8.0 or later, which installs in one line:
+Myna needs Crow from its main branch, at commit 8a96a3a or later:
+building Myna found 31 bugs in Crow, and their fixes came after the
+0.8.0 release. (Built from main, `crow --version` still says 0.8.0 until
+the next release.) Until then, build Crow from main. The installer fetches a C toolchain and
+Rust if they are missing:
 
 ```text
-curl -fsSL https://raw.githubusercontent.com/agncrow/crow/main/install.sh | bash
+git clone https://github.com/agncrow/crow
+cd crow
+./install.sh --source
 ```
 
-([The Crow Book](https://agncrow.github.io/crow/) says more.) Myna
-installs Magpie as any dependency, pinned by its `crow.lock`. From
-Myna's folder:
+From a release on, Crow installs in one line instead
+(`curl -fsSL https://raw.githubusercontent.com/agncrow/crow/main/install.sh | bash`);
+[the Crow Book](https://agncrow.github.io/crow/) says more. Then get
+Myna, install Magpie (its one dependency, pinned by `crow.lock`) and
+start it:
 
 ```text
+git clone https://github.com/agncrow/myna
+cd myna
 crow install
 crow run main.co
 ```
@@ -19,7 +29,9 @@ crow run main.co
 <http://localhost:3800>. The first build takes a few minutes; an edit
 rebuilds in seconds.
 
-`crow run -i main.co` interprets it instead and starts at once. Every
+`crow run -i main.co` interprets it instead, with no build. It still
+reads the whole program before it serves: from a fresh clone that took
+138 seconds on the Mac Studio it was timed on. Every
 page works the same way in both modes, but the interpreter derives each
 open page again from the logs on every refresh. Once a few sessions are
 open, a click on an Experiments page took 9 to 17 seconds interpreted,

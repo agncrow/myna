@@ -14,16 +14,20 @@ MLflow's own client.
 `docs/book/site.co`; `.github/workflows/pages.yml` publishes both on
 every push to main that touches them).
 
-Myna needs Crow 0.8.0 or later and installs Magpie as any dependency.
-From this folder:
+Myna needs Crow from main at commit 8a96a3a or later; the 0.8.0 release
+lacks the fixes Myna needs. Until the next release, build Crow from main
+(`git clone https://github.com/agncrow/crow && cd crow && ./install.sh --source`). Myna installs Magpie as any dependency:
 
 ```
+git clone https://github.com/agncrow/myna
+cd myna
 crow install
 crow run main.co
 ```
 
-serves it on port 3800. `crow run -i main.co` interprets it instead, and
-starts at once.
+serves it on port 3800. `crow run -i main.co` interprets it instead, with
+no build, though it takes about two minutes to read the program before
+it serves.
 
 ## The pages
 
