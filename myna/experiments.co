@@ -1,0 +1,757 @@
+--- Experiments: MLflow's tracking as a page of the workbench. The
+--- experiments on the left; on the right the chosen one's runs (filtered
+--- with MLflow's search grammar, sorted, the child runs under their
+--- parent), its logged models, its traces and a chart per metric across
+--- the runs picked. The page reads Myna's parts directly (tracking,
+--- search, traces) — the REST API is for MLflow's own client.
+use web, ui, frame
+use myna.workspace
+use myna.workbench
+use myna.tracking
+use myna.search
+use myna.traces
+use myna.charts
+
+current = ''
+tab = 'runs'
+query_text = ''
+asked_query = ''
+shown_deleted = false
+order_key = 'start'
+order_desc = true
+picked = []
+x_axis = 'step'
+naming = false
+new_name = ''
+renaming = false
+renamed_to = ''
+trace_open = ''
+trace_shown = false
+span_open = ''
+feedback = ''
+asked = 0
+
+--- ------------------------------------------------------------ reading
+
+derive experiments
+    seen = asked
+    return tracking.experiments_in['active']
+
+--- the experiment shown: the one asked for, else the newest
+derive shown
+    seen = asked
+    for e in experiments
+        if e.id eq current
+            return e.id
+    if len[experiments] eq 0
+        return ''
+    return experiments[0].id
+
+derive shown_name
+    for e in experiments
+        if e.id eq shown
+            return e.name
+    return ''
+
+--- a moment held as milliseconds, shown short
+fn when_ms[ms]
+    if ms lte 0
+        return ''
+    t = moment[float[ms] / 1000.0]
+    if not t.ok
+        return ''
+    return workspace.short_at[str[t]]
+
+--- how long a run took, in words: 950 ms, 12.4 s, 3.2 min, 1.5 h
+fn took_words[start, finish]
+    if finish lte 0 or finish lt start
+        return ''
+    ms = finish - start
+    if ms lt 1000
+        return '`ms` ms'
+    s = float[ms] / 1000.0
+    if s lt 60.0
+        return '`float[round[s * 10.0]] / 10.0` s'
+    if s lt 3600.0
+        return '`float[round[s / 6.0]] / 10.0` min'
+    return '`float[round[s / 360.0]] / 10.0` h'
+
+--- a run as the table shows it: its own fields, its latest metrics and
+--- its params as text, the run it is a child of
+struct RunRow [id, name, status, start, took, user, source, parent, depth, metrics, params, stage]
+struct ChartOf [key, series]
+
+fn _metric_text[v]
+    if v ne v
+        return 'NaN'
+    return charts.tick_text[v]
+
+fn _row_of[r, depth]
+    tags = tracking.tags_of['run', r.id, '']
+    parent = ''
+    source = ''
+    for t in tags
+        if t.key eq 'mlflow.parentRunId'
+            parent = t.value
+        if t.key eq 'mlflow.source.name'
+            source = t.value
+    ms = for m in tracking.latest_of[r.id]
+        tracking.Pair[m.key, _metric_text[m.value]]
+    return RunRow[r.id, r.name, r.status, when_ms[r.start], took_words[r.start, r.finish], r.user, source, parent, depth, ms, tracking.params_of[r.id], r.stage]
+
+fn _view_of[deleted]
+    if deleted
+        return 'all'
+    return 'active'
+
+--- the runs found by the filter, in its order; a failure is the filter's
+--- reason, said under the field
+fn _found[experiment, filter, deleted, key, desc]
+    direction = 'ASC'
+    if desc
+        direction = 'DESC'
+    order = 'attributes.`key` `direction`'
+    if key ne 'start' and key ne 'name' and key ne 'status'
+        order = '`key` `direction`'
+    if key eq 'start'
+        order = 'attributes.start_time `direction`'
+    if key eq 'name'
+        order = 'attributes.run_name `direction`'
+    p = search.find_runs[[experiment], filter, _view_of[deleted], [order], 1000, '']
+    if not p.ok
+        return p
+    return p.runs
+
+derive problem
+    seen = asked
+    if shown eq ''
+        return ''
+    found = _found[shown, asked_query, shown_deleted, order_key, order_desc]
+    if not found.ok
+        return found.reason
+    return ''
+
+--- the rows: each run, its children right under it (a child whose
+--- parent the filter left out stands alone)
+derive run_rows
+    seen = asked
+    rows = for r in range[0]
+        RunRow['', '', '', '', '', '', '', '', 0, [], [], '']
+    if shown eq ''
+        return rows
+    found = _found[shown, asked_query, shown_deleted, order_key, order_desc]
+    if not found.ok
+        return rows
+    plain = for r in found
+        _row_of[r, 0]
+    ids = for r in plain
+        r.id
+    for r in plain
+        if r.parent eq '' or not (r.parent in ids)
+            rows = push[rows, r]
+            for c in plain
+                if c.parent eq r.id
+                    rows = push[rows, RunRow[c.id, c.name, c.status, c.start, c.took, c.user, c.source, c.parent, 1, c.metrics, c.params, c.stage]]
+    return rows
+
+--- the metric keys and the param keys the rows hold, each once, in the
+--- order first met: the table's columns
+derive metric_keys
+    found = []
+    for r in run_rows
+        for m in r.metrics
+            if not (m.key in found)
+                found = push[found, m.key]
+    return found
+
+derive param_keys
+    found = []
+    for r in run_rows
+        for p in r.params
+            if not (p.key in found)
+                found = push[found, p.key]
+    return found
+
+derive logged
+    seen = asked
+    if shown eq ''
+        return tracking.logged_in[['none']]
+    return tracking.logged_in[[shown]]
+
+derive trace_list
+    seen = asked
+    if shown eq ''
+        return traces.traces_in[['none']]
+    return traces.traces_in[[shown]]
+
+derive opened_spans
+    seen = asked
+    if trace_open eq ''
+        return traces.spans_in['']
+    return traces.spans_of[trace_open]
+
+derive opened_assessments
+    seen = asked
+    if trace_open eq ''
+        return traces.assessments_of['none']
+    return traces.assessments_of[trace_open]
+
+--- the runs a chart draws: the ones picked, else the experiment's first
+--- eight
+derive charted
+    if len[picked] gt 0
+        return picked
+    out = []
+    for r in run_rows
+        if len[out] lt 8
+            out = push[out, r.id]
+    return out
+
+fn _name_of_run[id]
+    r = tracking.run[id]
+    if not r.ok
+        return id
+    if r.name eq ''
+        return id
+    return r.name
+
+--- each metric's series across the runs charted: x by the axis chosen
+fn series_of[run_ids, key, axis]
+    out = for i in range[0]
+        charts.Series['', [0.0], [0.0]]
+    for id in run_ids
+        h = tracking.history[id, key]
+        if len[h] gt 0
+            first = h[0].at
+            for m in h
+                if m.at lt first
+                    first = m.at
+            xs = for m in h
+                charts_x[m, first, axis]
+            ys = for m in h
+                m.value
+            out = push[out, charts.Series[_name_of_run[id], xs, ys]]
+    return out
+
+fn charts_x[m, first, axis]
+    if axis eq 'time'
+        return float[m.at] / 1000.0
+    if axis eq 'elapsed'
+        return float[m.at - first] / 1000.0
+    return float[m.step]
+
+derive chart_keys
+    found = []
+    for id in charted
+        for m in tracking.latest_of[id]
+            if not (m.key in found)
+                found = push[found, m.key]
+    return found
+
+--- each metric's lines across the runs charted, by the axis chosen
+derive chart_series
+    out = for k in chart_keys
+        ChartOf[k, series_of[charted, k, x_axis]]
+    return out
+
+--- ------------------------------------------------------------ doing
+
+fn pick_experiment[id]
+    current = id
+    picked = []
+    trace_open = ''
+
+fn show_tab[name]
+    tab = name
+
+fn search_runs[]
+    asked_query = query_text
+    asked = asked + 1
+
+fn clear_search[]
+    query_text = ''
+    asked_query = ''
+    asked = asked + 1
+
+fn sort_by[key]
+    if order_key eq key
+        order_desc = not order_desc
+    else
+        order_key = key
+        order_desc = key eq 'start'
+
+fn toggle_pick[id]
+    if id in picked
+        kept = []
+        for p in picked
+            if p ne id
+                kept = push[kept, p]
+        picked = kept
+    else
+        picked = push[picked, id]
+
+fn clear_picks[]
+    picked = []
+
+fn delete_picked[]
+    gone = 0
+    for id in picked
+        d = tracking.delete_run[id]
+        if d.ok
+            gone = gone + 1
+    picked = []
+    asked = asked + 1
+    notice['`gone` runs deleted: Show deleted lists them, and Restore brings them back']
+
+fn restore_run[id]
+    r = tracking.restore_run[id]
+    asked = asked + 1
+    if not r.ok
+        notice['The run was not restored: `r.reason`']
+
+fn ask_name[]
+    new_name = ''
+    naming = true
+
+fn close_naming[]
+    naming = false
+
+fn create_one[]
+    name = trim[new_name]
+    if name eq ''
+        notice['An experiment needs a name']
+        return
+    id = tracking.create_experiment[name, '']
+    if not id.ok
+        notice['`id.reason`']
+        return
+    naming = false
+    current = id
+    asked = asked + 1
+
+fn ask_rename[]
+    renamed_to = shown_name
+    renaming = true
+
+fn close_renaming[]
+    renaming = false
+
+fn rename_one[]
+    r = tracking.rename_experiment[shown, trim[renamed_to]]
+    if not r.ok
+        notice['`r.reason`']
+        return
+    renaming = false
+    asked = asked + 1
+
+fn delete_shown[]
+    d = tracking.delete_experiment[shown]
+    if not d.ok
+        notice['`d.reason`']
+        return
+    current = ''
+    asked = asked + 1
+    notice['The experiment is deleted: its runs and files are kept, and MLflow\'s client can restore it']
+
+fn open_trace[id]
+    trace_open = id
+    span_open = ''
+    trace_shown = true
+
+fn close_trace[]
+    trace_shown = false
+    trace_open = ''
+
+fn open_span[id]
+    span_open = id
+
+--- feedback on the trace from the reader: an assessment of kind feedback
+fn give_feedback[value]
+    a = traces.assess[trace_open, 'reader', 'feedback', value, 'HUMAN', env['USER', 'you'], trim[feedback], span_open]
+    if not a.ok
+        notice['The feedback was not kept: `a.reason`']
+        return
+    feedback = ''
+    asked = asked + 1
+
+fn axis_to[name]
+    x_axis = name
+
+--- ------------------------------------------------------------ drawing
+
+view _tab_link[name, label]
+    if tab eq name
+        return button[label, click = show_tab[name], class = 'boardtab on']
+    return button[label, click = show_tab[name], class = 'boardtab']
+
+view _tabs[]
+    return row[
+        _tab_link['runs', 'Runs'],
+        _tab_link['models', 'Models'],
+        _tab_link['traces', 'Traces'],
+        _tab_link['charts', 'Charts'],
+        gap = 'none', wrap = true, class = 'boardtabs']
+
+view _experiment_link[e]
+    if e.id eq shown
+        return button[e.name, click = pick_experiment[e.id], class = 'explink on']
+    return button[e.name, click = pick_experiment[e.id], class = 'explink']
+
+view _experiment_list[]
+    links = for e in experiments
+        _experiment_link[e]
+    return stack[
+        row[p['Experiments', weight = 'bold', size = 's'], button['New', click = ask_name], justify = 'between', align = 'center'],
+        links,
+        gap = 'xs', pad = 's', width = '220px', surface = 'card', border = true, class = 'explist']
+
+fn _arrow[key, by, desc]
+    if by ne key
+        return ''
+    if desc
+        return ' ↓'
+    return ' ↑'
+
+view _head_cell[label, key]
+    return th[button['`label``_arrow[key, order_key, order_desc]`', click = sort_by[key], class = 'sorthead']]
+
+fn _value_in[pairs, key]
+    for p in pairs
+        if p.key eq key
+            return p.value
+    return ''
+
+view _status[status]
+    if status eq 'FINISHED' or status eq 'OK'
+        return p[status, size = 'xs', color = 'up']
+    if status eq 'FAILED' or status eq 'KILLED' or status eq 'ERROR'
+        return p[status, size = 'xs', color = 'down']
+    return p[status, size = 'xs', color = 'muted']
+
+fn _pick_mark[id, chosen]
+    if id in chosen
+        return '☑'
+    return '☐'
+
+view _status_of_run[r]
+    if r.stage eq 'deleted'
+        return row[p['deleted', size = 'xs', color = 'down'], button['Restore', click = restore_run[r.id]], gap = 'xs', align = 'center']
+    return _status[r.status]
+
+view _run_line[r]
+    metric_cells = for k in metric_keys
+        td[p[_value_in[r.metrics, k], font = 'mono', size = 'xs']]
+    param_cells = for k in param_keys
+        td[p[_value_in[r.params, k], font = 'mono', size = 'xs']]
+    indent = ''
+    if r.depth gt 0
+        indent = '↳ '
+    label = r.name
+    if label eq ''
+        label = r.id
+    return tr[
+        td[button[_pick_mark[r.id, picked], click = toggle_pick[r.id], tip = 'Pick to compare', class = 'pick']],
+        td[a['`indent``label`', href = '/runs/`r.id`', class = 'runname']],
+        td[p[r.start, size = 'xs', color = 'muted']],
+        td[p[r.took, size = 'xs']],
+        td[_status_of_run[r]],
+        td[p[r.user, size = 'xs', color = 'muted']],
+        metric_cells,
+        param_cells]
+
+view _picked_bar[]
+    if len[picked] eq 0
+        return p['Pick runs (☐) to compare them or to chart them together', color = 'muted', size = 'xs']
+    joined = join[picked, ',']
+    return row[
+        p['`len[picked]` picked', size = 's', weight = 'bold'],
+        a['Compare', href = '/compare?runs=`joined`', class = 'button primary'],
+        button['Chart them', click = show_tab['charts']],
+        button['Delete', click = delete_picked, confirm = 'Delete the runs picked? They can be restored.'],
+        button['Clear', click = clear_picks],
+        gap = 's', align = 'center', wrap = true]
+
+view _runs_tab[]
+    heads = for k in metric_keys
+        _head_cell[k, 'metrics.`k`']
+    param_heads = for k in param_keys
+        _head_cell[k, 'params.`k`']
+    lines = for r in run_rows
+        _run_line[r]
+    said = p['', size = 'xs']
+    if problem ne ''
+        said = p[problem, color = 'down', size = 's']
+    body = p['No runs yet: a notebook cell logs one with tracking.start_run, or MLflow\'s client with mlflow.start_run().', color = 'muted', size = 's']
+    if len[run_rows] gt 0
+        body = scroll[table[
+            thead[tr[th[''], _head_cell['Run', 'name'], _head_cell['Created', 'start'], th['Duration'], _head_cell['Status', 'status'], th['User'], heads, param_heads]],
+            tbody[lines],
+            class = 'runs']]
+    return stack[
+        form[
+            row[field['Filter', query_text, type = 'text'], button['Search', class = 'primary'], button['Clear', click = clear_search], checkbox['Show deleted', shown_deleted], gap = 's', align = 'end', wrap = true],
+            submit = search_runs],
+        p['MLflow\'s grammar: metrics.rmse < 1 and params.lr = \'0.1\' and tags.team = \'lab\' and attributes.status = \'FINISHED\'', color = 'muted', size = 'xs'],
+        said,
+        _picked_bar[],
+        body,
+        gap = 's']
+
+view _logged_line[m]
+    return tr[
+        td[p[m.name, weight = 'bold', size = 's']],
+        td[p[m.id, font = 'mono', size = 'xs', color = 'muted']],
+        td[a[m.run, href = '/runs/`m.run`']],
+        td[p[m.status, size = 'xs']],
+        td[p[m.model_type, size = 'xs']],
+        td[p[when_ms[m.created], size = 'xs', color = 'muted']]]
+
+view _models_tab[]
+    if len[logged] eq 0
+        return p['No logged models: mlflow.<flavor>.log_model, or tracking.create_logged in a notebook, puts one here.', color = 'muted', size = 's']
+    lines = for m in logged
+        _logged_line[m]
+    return scroll[table[thead[tr[th['Name'], th['Model id'], th['Run'], th['Status'], th['Type'], th['Created']]], tbody[lines], class = 'runs']]
+
+view _trace_line[t]
+    return tr[
+        td[button[t.name, click = open_trace[t.id], class = 'linkish']],
+        td[p[t.id, font = 'mono', size = 'xs', color = 'muted']],
+        td[p[when_ms[t.began], size = 'xs']],
+        td[p[_trace_ms[t.took], size = 'xs']],
+        td[_status[t.state]],
+        td[p[t.request_preview, size = 'xs', font = 'mono']]]
+
+view _traces_tab[]
+    if len[trace_list] eq 0
+        return p['No traces: traces.begin in a notebook, or @mlflow.trace in Python, records one here.', color = 'muted', size = 's']
+    lines = for t in trace_list
+        _trace_line[t]
+    return scroll[table[thead[tr[th['Trace'], th['Id'], th['Started'], th['Took'], th['State'], th['Request']]], tbody[lines], class = 'runs']]
+
+view _axis_button[name, label]
+    if x_axis eq name
+        return button[label, click = axis_to[name], class = 'primary']
+    return button[label, click = axis_to[name]]
+
+view _charts_tab[]
+    if len[chart_keys] eq 0
+        return p['No metrics to chart in the runs shown.', color = 'muted', size = 's']
+    cards = for c in chart_series
+        charts.lines[c.key, c.series, x_axis]
+    return stack[
+        row[p['x axis', size = 's', color = 'muted'], _axis_button['step', 'Step'], _axis_button['time', 'Time (s)'], _axis_button['elapsed', 'Elapsed (s)'], p['`len[charted]` runs', size = 'xs', color = 'muted'], gap = 's', align = 'center', wrap = true],
+        grid[cards, columns = 2, gap = 'm'],
+        gap = 's']
+
+view _tab_body[]
+    if tab eq 'models'
+        return _models_tab[]
+    if tab eq 'traces'
+        return _traces_tab[]
+    if tab eq 'charts'
+        return _charts_tab[]
+    return _runs_tab[]
+
+view _first_page[]
+    return stack[
+        h2['No experiments yet'],
+        p['An experiment holds runs: each run\'s parameters, metrics over steps, tags, datasets and files. A notebook logs them with myna.tracking; MLflow\'s Python client logs them too, with MLFLOW_TRACKING_URI set to this workbench.', color = 'muted'],
+        row[button['New experiment', click = ask_name, class = 'primary'], gap = 's'],
+        gap = 's', pad = 'l', surface = 'card', border = true, max_width = '640px']
+
+view _naming[]
+    return modal[
+        stack[
+            h2['New experiment'],
+            form[field['Name', new_name, type = 'text'], button['Create', class = 'primary'], submit = create_one],
+            button['Cancel', click = close_naming, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = naming]
+
+view _renaming[]
+    return modal[
+        stack[
+            h2['Rename the experiment'],
+            form[field['Name', renamed_to, type = 'text'], button['Rename', class = 'primary'], submit = rename_one],
+            button['Cancel', click = close_renaming, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = renaming]
+
+view _body[]
+    if shown eq ''
+        return stack[row[h1['Experiments'], gap = 's'], _first_page[], gap = 'm']
+    return row[
+        _experiment_list[],
+        stack[
+            row[
+                stack[h1[shown_name], p['experiment `shown`', color = 'muted', size = 'xs'], gap = 'xs'],
+                row[button['Rename', click = ask_rename], button['Delete', click = delete_shown, confirm = 'Delete this experiment? Its runs are kept, and it can be restored.'], gap = 's'],
+                justify = 'between', align = 'center', wrap = true],
+            _tabs[],
+            _tab_body[],
+            gap = 'm', fill = 'true'],
+        gap = 'm', align = 'start', below = 'phone', becomes = 'stack']
+
+fn _where[name]
+    if name eq ''
+        return 'Experiments'
+    return 'Experiments / `name`'
+
+--- the trace drawer: the span tree, each span a bar placed in the
+--- trace's time; the picked span's inputs and outputs; the feedback
+fn _span_bar_style[s, lo, hi]
+    width = hi - lo
+    if width lte 0
+        return 'margin-left: 0%; width: 100%'
+    left = float[s.began - lo] * 100.0 / float[width]
+    wide = float[s.ended - s.began] * 100.0 / float[width]
+    if wide lt 1.0
+        wide = 1.0
+    return 'margin-left: `float[round[left * 10.0]] / 10.0`%; width: `float[round[wide * 10.0]] / 10.0`%'
+
+--- a trace's duration in whole milliseconds, as MLflow keeps it: a trace
+--- quicker than one is under one, not none
+fn _trace_ms[took]
+    if took lte 0
+        return '< 1 ms'
+    return '`took` ms'
+
+fn _span_ms[s]
+    if s.ended lte s.began
+        return ''
+    return '`float[round[float[s.ended - s.began] / 100000.0]] / 10.0` ms'
+
+view _span_line[s, lo, hi]
+    pad_by = '`s.depth * 16`px'
+    mark = 'spanrow'
+    if s.id eq span_open
+        mark = 'spanrow on'
+    return button[
+        stack[
+            row[p[s.name, size = 's', weight = 'bold'], p[s.span_type, size = 'xs', color = 'muted'], p[_span_ms[s], size = 'xs', font = 'mono'], gap = 's', align = 'center', style = 'padding-left: `pad_by`'],
+            stack[stack[class = 'spanbar', style = _span_bar_style[s, lo, hi]], class = 'spantrack'],
+            gap = 'xs'],
+        click = open_span[s.id], class = mark]
+
+view _span_detail[]
+    for s in opened_spans
+        if s.id eq span_open
+            return stack[
+                p[s.name, weight = 'bold'],
+                p['status `s.status` `s.message`', size = 'xs', color = 'muted'],
+                p['Inputs', size = 'xs', weight = 'bold'],
+                pre[s.inputs],
+                p['Outputs', size = 'xs', weight = 'bold'],
+                pre[s.outputs],
+                p['Attributes', size = 'xs', weight = 'bold'],
+                pre[s.attributes],
+                gap = 'xs', pad = 's', surface = 'card', border = true, class = 'spanbox']
+    return p['Pick a span for its inputs, outputs and attributes', color = 'muted', size = 's']
+
+view _assessment_line[x]
+    return row[p[x.name, size = 'xs', weight = 'bold'], p[x.value, size = 'xs', font = 'mono'], p[x.rationale, size = 'xs', color = 'muted'], p[x.source_id, size = 'xs', color = 'muted'], gap = 's', align = 'center', wrap = true]
+
+view _trace_drawer[]
+    lo = 0
+    hi = 0
+    for s in opened_spans
+        if lo eq 0 or s.began lt lo
+            lo = s.began
+        if s.ended gt hi
+            hi = s.ended
+    lines = for s in opened_spans
+        _span_line[s, lo, hi]
+    marks = for x in opened_assessments
+        _assessment_line[x]
+    tree = p['This trace has no spans kept', color = 'muted', size = 's']
+    if len[opened_spans] gt 0
+        tree = stack[lines, gap = 'xs']
+    return drawer[
+        stack[
+            row[h2['Trace'], button['Close', click = close_trace, shortcut = 'escape'], justify = 'between', align = 'center'],
+            p[trace_open, font = 'mono', size = 'xs', color = 'muted'],
+            tree,
+            _span_detail[],
+            p['Feedback', weight = 'bold', size = 's'],
+            marks,
+            field['Why (optional)', feedback, type = 'text'],
+            row[button['👍 Good', click = give_feedback['true']], button['👎 Bad', click = give_feedback['false']], gap = 's'],
+            gap = 's', pad = 'm', width = '520px'],
+        open = trace_shown]
+
+view render[]
+    return stack[
+        workbench.screen['Experiments', _where[shown_name], button['New experiment', click = ask_name], _body[]],
+        _naming[],
+        _renaming[],
+        _trace_drawer[]]
+
+--- the page lists an experiment's runs with their metrics and params,
+--- filters and sorts them, picks two and charts their metrics, and opens
+--- a trace's spans in the drawer
+test experiments_show_runs_filter_and_chart_them[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    tracking.ready[]
+    a = app[render, wide = true]
+    --- MLflow's Default experiment is there from the start
+    assert['Default' in html[a]]
+    click[a, ask_name]
+    change[a, 'new_name', 'prices']
+    click[a, create_one]
+    assert[a.shown_name eq 'prices']
+    one = tracking.start_run['prices', 'small']
+    p1 = tracking.log_params[one, map[lr = '0.1']]
+    for step in range[3]
+        m = tracking.log_metric[one, 'loss', 1.0 / float[step + 1], step]
+    e1 = tracking.end_run[one, 'FINISHED']
+    two = tracking.start_run['prices', 'large']
+    p2 = tracking.log_params[two, map[lr = '0.01']]
+    for step in range[3]
+        m = tracking.log_metric[two, 'loss', 2.0 / float[step + 1], step]
+    e2 = tracking.end_run[two, 'FINISHED']
+    click[a, search_runs]
+    drawn = html[a]
+    assert['small' in drawn and 'large' in drawn]
+    assert['0.333' in drawn and '0.667' in drawn]
+    assert[len[a.run_rows] eq 2]
+    change[a, 'query_text', 'metrics.loss < 0.5']
+    click[a, search_runs]
+    assert[len[a.run_rows] eq 1]
+    assert[a.run_rows[0].name eq 'small']
+    change[a, 'query_text', 'metrics.loss IS NULL']
+    click[a, search_runs]
+    assert['IS NULL' in a.problem]
+    click[a, clear_search]
+    click[a, sort_by['name']]
+    assert[a.run_rows[0].name eq 'large']
+    click[a, sort_by['name']]
+    assert[a.run_rows[0].name eq 'small']
+    click[a, toggle_pick[one]]
+    click[a, toggle_pick[two]]
+    assert[len[a.picked] eq 2]
+    assert['Compare' in html[a]]
+    click[a, show_tab['charts']]
+    assert[a.chart_keys eq ['loss']]
+    assert['data:image/svg+xml;base64,' in html[a]]
+    click[a, axis_to['elapsed']]
+    assert[a.x_axis eq 'elapsed']
+    tr = traces.begin['prices', 'predict', '{"x": 1}']
+    sp = traces.span[tr, traces.root_of[tr], 'score', 'LLM', '{"x": 1}', '2', tracking.clock[]]
+    done = traces.finish[sp, '2', 'OK']
+    click[a, show_tab['traces']]
+    assert['predict' in html[a]]
+    click[a, open_trace[a.trace_list[0].id]]
+    assert[len[a.opened_spans] eq 2]
+    click[a, open_span[a.opened_spans[1].id]]
+    assert['score' in html[a]]
+    click[a, give_feedback['true']]
+    assert[len[a.opened_assessments] eq 1]
+    click[a, delete_picked]
+    assert[len[a.run_rows] eq 0]
+    change[a, 'shown_deleted', true]
+    click[a, search_runs]
+    assert[len[a.run_rows] eq 2]
+    gone = rm[workspace.home[]]

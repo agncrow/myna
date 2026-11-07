@@ -1,0 +1,1606 @@
+--- MLflow's REST API over Myna's parts, written in Crow: the requests
+--- MLflow's own client makes, answered as MLflow 3.18 answers them (each
+--- shape recorded from a running server). Each endpoint is a function of
+--- the request's arguments — the JSON body, or the query of a GET, read as
+--- one parsed value — answering the JSON text of its reply or a failure
+--- whose kind names MLflow's error: 'missing' RESOURCE_DOES_NOT_EXIST (404),
+--- 'exists' RESOURCE_ALREADY_EXISTS (400), 'invalid'
+--- INVALID_PARAMETER_VALUE (400). The handlers below the endpoints turn
+--- those into responses; main.co routes MLflow's paths to them.
+use web
+use myna.workspace
+use myna.tracking
+use myna.registry
+use myna.search
+use myna.traces
+
+--- ------------------------------------------------------------ reading
+
+--- a request's arguments as one parsed value: its JSON body, else its
+--- query
+fn args_of[body, query_json]
+    clean = trim[body]
+    if clean ne ''
+        j = json[clean]
+        if j.ok
+            return j
+    q = json[query_json]
+    if q.ok
+        return q
+    return json['{}']
+
+fn _s[a, key]
+    v = a[key]
+    if not v.ok
+        return ''
+    return '`v`'
+
+fn _has[a, key]
+    v = a[key]
+    return v.ok
+
+fn _int[a, key]
+    t = _s[a, key]
+    if t eq ''
+        return 0
+    n = int[t]
+    if not n.ok
+        f = float[t]
+        if not f.ok
+            return 0
+        return workspace.small[int[f]]
+    return workspace.small[n]
+
+--- a number as MLflow's client writes one: NaN and the infinities as text
+fn float_text[t]
+    if t eq 'NaN' or t eq 'nan'
+        return 0.0 / 0.0
+    if t eq 'Infinity' or t eq 'inf'
+        return 1.0 / 0.0
+    if t eq '-Infinity' or t eq '-inf'
+        return -1.0 / 0.0
+    f = float[t]
+    if not f.ok
+        return 0.0 / 0.0
+    return f
+
+fn _float[a, key]
+    return float_text[_s[a, key]]
+
+fn _truth[a, key]
+    t = lower[_s[a, key]]
+    return t eq 'true' or t eq '1'
+
+--- a list in the arguments, or none
+fn _items[a, key]
+    v = a[key]
+    found = for x in range[0]
+        a
+    if not v.ok
+        return found
+    --- a guard narrows only where it leaves, and only a `while` goes on
+    --- past an item: a failed item (JSON's null) is skipped
+    i = 0
+    while i lt len[v]
+        x = v[i]
+        i = i + 1
+        if not x.ok
+            continue
+        found = push[found, x]
+    return found
+
+--- a field that is a list of text, or one text
+fn _texts[a, key]
+    found = []
+    v = a[key]
+    if not v.ok
+        return found
+    t = '`v`'
+    if starts[trim[t], '[']
+        i = 0
+        while i lt len[v]
+            x = v[i]
+            i = i + 1
+            if not x.ok
+                continue
+            found = push[found, '`x`']
+        return found
+    if t ne ''
+        found = push[found, t]
+    return found
+
+--- key and value pairs, the last of a key winning
+fn _pairs_in[a, key]
+    found = []
+    for t in _items[a, key]
+        k = _s[t, 'key']
+        vv = _s[t, 'value']
+        kept = []
+        for p in found
+            if p.key ne k
+                kept = push[kept, p]
+        found = push[kept, tracking.Pair[k, vv]]
+    return found
+
+--- a map of text in the arguments as pairs: trace tags and metadata
+fn _map_pairs[a, key]
+    found = []
+    v = a[key]
+    if not v.ok
+        return found
+    for k in keys[v]
+        if _has[v, k]
+            found = push[found, tracking.Pair[k, _s[v, k]]]
+    return found
+
+fn _keys_of[ps]
+    found = for p in ps
+        p.key
+    return found
+
+fn _values_of[ps]
+    found = for p in ps
+        p.value
+    return found
+
+fn _need[t, what]
+    if t eq ''
+        return error['Missing value for required parameter \'`what`\'', 'invalid']
+    return t
+
+--- ------------------------------------------------------------ writing
+
+fn _q[s]
+    return tracking.quoted[s]
+
+--- a number as JSON: NaN and the infinities as MLflow's client reads them
+fn num_json[x]
+    if x ne x
+        return '"NaN"'
+    if x eq 1.0 / 0.0
+        return '"Infinity"'
+    if x eq -1.0 / 0.0
+        return '"-Infinity"'
+    return '`x`'
+
+fn _pairs_json[ps]
+    pieces = for p in ps
+        '{"key": `_q[p.key]`, "value": `_q[p.value]`}'
+    joined = join[pieces, ', ']
+    return '[`joined`]'
+
+fn _map_json[ps]
+    pieces = for p in ps
+        '`_q[p.key]`: `_q[p.value]`'
+    joined = join[pieces, ', ']
+    return '{`joined`}'
+
+fn _metric_json[m]
+    return '{"key": `_q[m.key]`, "value": `num_json[m.value]`, "timestamp": `m.at`, "step": `m.step`}'
+
+fn _list_json[pieces]
+    joined = join[pieces, ', ']
+    return '[`joined`]'
+
+fn experiment_json[e]
+    tags = tracking.tags_of['experiment', e.id, '']
+    out = '{"experiment_id": `_q[e.id]`, "name": `_q[e.name]`, "artifact_location": `_q[e.location]`, "lifecycle_stage": `_q[e.stage]`, "last_update_time": `e.updated`, "creation_time": `e.created`'
+    if len[tags] gt 0
+        out = '`out`, "tags": `_pairs_json[tags]`'
+    return '`out`}'
+
+fn run_info_json[r]
+    out = '{"run_uuid": `_q[r.id]`, "experiment_id": `_q[r.experiment]`, "run_name": `_q[r.name]`, "user_id": `_q[r.user]`, "status": `_q[r.status]`, "start_time": `r.start`'
+    if r.finish gt 0
+        out = '`out`, "end_time": `r.finish`'
+    return '`out`, "artifact_uri": `_q[r.artifacts]`, "lifecycle_stage": `_q[r.stage]`, "run_id": `_q[r.id]`}'
+
+fn _dataset_json[d]
+    ctx = [tracking.Pair['mlflow.data.context', d.context]]
+    return '{"tags": `_pairs_json[ctx]`, "dataset": {"name": `_q[d.name]`, "digest": `_q[d.digest]`, "source_type": `_q[d.source_type]`, "source": `_q[d.source]`, "schema": `_q[d.schema]`, "profile": `_q[d.profile]`}}'
+
+fn run_json[r]
+    data = []
+    ms = for m in tracking.latest_of[r.id]
+        _metric_json[m]
+    if len[ms] gt 0
+        data = push[data, '"metrics": `_list_json[ms]`']
+    params = tracking.params_of[r.id]
+    if len[params] gt 0
+        data = push[data, '"params": `_pairs_json[params]`']
+    tags = tracking.tags_of['run', r.id, '']
+    if len[tags] gt 0
+        data = push[data, '"tags": `_pairs_json[tags]`']
+    sets = for d in tracking.inputs_of[r.id]
+        _dataset_json[d]
+    ins = '{}'
+    if len[sets] gt 0
+        ins = '{"dataset_inputs": `_list_json[sets]`}'
+    ids = tracking.outputs_of[r.id]
+    steps = tracking.output_steps[r.id]
+    outs = '{}'
+    if len[ids] gt 0
+        made = for i in range[len[ids]]
+            '{"model_id": `_q[ids[i]]`, "step": `steps[i]`}'
+        outs = '{"model_outputs": `_list_json[made]`}'
+    joined = join[data, ', ']
+    return '{"info": `run_info_json[r]`, "data": {`joined`}, "inputs": `ins`, "outputs": `outs`}'
+
+fn logged_json[m]
+    tags = tracking.tags_of['logged_model', m.id, '']
+    info = '{"model_id": `_q[m.id]`, "experiment_id": `_q[m.experiment]`, "name": `_q[m.name]`, "creation_timestamp_ms": `m.created`, "last_updated_timestamp_ms": `m.updated`, "artifact_uri": `_q[m.location]`, "status": `_q[m.status]`, "model_type": `_q[m.model_type]`, "source_run_id": `_q[m.run]`'
+    if len[tags] gt 0
+        info = '`info`, "tags": `_pairs_json[tags]`'
+    data = []
+    params = tracking.params_of[m.id]
+    if len[params] gt 0
+        data = push[data, '"params": `_pairs_json[params]`']
+    ms = tracking.model_metrics[m.id]
+    runs = tracking.model_metric_runs[m.id]
+    if len[ms] gt 0
+        pieces = for i in range[len[ms]]
+            '{"key": `_q[ms[i].key]`, "value": `num_json[ms[i].value]`, "timestamp": `ms[i].at`, "step": `ms[i].step`, "model_id": `_q[m.id]`, "run_id": `_q[runs[i]]`}'
+        data = push[data, '"metrics": `_list_json[pieces]`']
+    joined = join[data, ', ']
+    return '{"info": `info`}, "data": {`joined`}}'
+
+fn version_json[v]
+    number = '`v.version`'
+    out = '{"name": `_q[v.name]`, "version": `_q[number]`, "creation_timestamp": `v.created`, "last_updated_timestamp": `v.updated`, "current_stage": `_q[v.stage]`, "description": `_q[v.description]`, "source": `_q[v.source]`, "run_id": `_q[v.run]`, "status": `_q[v.status]`'
+    tags = tracking.tags_of['model_version', v.model, '`v.version`']
+    if len[tags] gt 0
+        out = '`out`, "tags": `_pairs_json[tags]`'
+    out = '`out`, "run_link": ""'
+    names = registry.aliases_for[v.name, v.version]
+    if len[names] gt 0
+        quoted_names = for n in names
+            _q[n]
+        out = '`out`, "aliases": `_list_json[quoted_names]`'
+    return '`out`}'
+
+fn _alias_json[x]
+    number = '`x.version`'
+    return '{"alias": `_q[x.alias]`, "version": `_q[number]`}'
+
+fn model_json[m]
+    out = '{"name": `_q[m.name]`, "creation_timestamp": `m.created`, "last_updated_timestamp": `m.updated`'
+    if m.description ne ''
+        out = '`out`, "description": `_q[m.description]`'
+    latest = for v in registry.latest_versions[m.name, []]
+        version_json[v]
+    if len[latest] gt 0
+        out = '`out`, "latest_versions": `_list_json[latest]`'
+    tags = tracking.tags_of['registered_model', m.id, '']
+    if len[tags] gt 0
+        out = '`out`, "tags": `_pairs_json[tags]`'
+    named = for x in registry.aliases_of[m.name]
+        _alias_json[x]
+    if len[named] gt 0
+        out = '`out`, "aliases": `_list_json[named]`'
+    return '`out`}'
+
+--- a span of time in milliseconds as protobuf writes a duration
+fn duration_text[ms]
+    whole = ms / 1000
+    part = ms - whole * 1000
+    if part eq 0
+        return '`whole`s'
+    p = '`part`'
+    while len[p] lt 3
+        p = '0`p`'
+    return '`whole`.`p`s'
+
+fn duration_ms[t]
+    clean = trim[t]
+    if ends[clean, 's']
+        clean = slice[clean, 0, len[clean] - 1]
+    f = float[clean]
+    if not f.ok
+        return 0
+    return workspace.small[int[f * 1000.0]]
+
+fn iso_of[ms]
+    return str[moment[float[ms] / 1000.0]]
+
+fn ms_of_iso[t]
+    m = moment[t]
+    if not m.ok
+        return tracking.clock[]
+    return workspace.small[int[float[m] * 1000.0]]
+
+--- a JSON object of text as pairs, none where the text is no object
+fn _pairs_of_json[source]
+    found = []
+    j = json[source]
+    if not j.ok
+        return found
+    for k in keys[j]
+        if _has[j, k]
+            found = push[found, tracking.Pair[k, _s[j, k]]]
+    return found
+
+fn trace_info_json[t]
+    meta = _pairs_of_json[t.metadata]
+    tags = tracking.tags_of['trace', t.id, '']
+    out = '{"trace_id": `_q[t.id]`, "trace_location": {"type": "MLFLOW_EXPERIMENT", "mlflow_experiment": {"experiment_id": `_q[t.experiment]`}}, "request_time": `_q[iso_of[t.began]]`, "execution_duration": `_q[duration_text[t.took]]`, "state": `_q[t.state]`, "trace_metadata": `_map_json[meta]`, "tags": `_map_json[tags]`'
+    if t.client_request_id ne ''
+        out = '`out`, "client_request_id": `_q[t.client_request_id]`'
+    return '`out`, "request_preview": `_q[t.request_preview]`, "response_preview": `_q[t.response_preview]`}'
+
+fn _paged[key, pieces, next]
+    out = '{"`key`": `_list_json[pieces]`'
+    if next ne ''
+        out = '`out`, "next_page_token": `_q[next]`'
+    return '`out`}'
+
+--- ------------------------------------------------------ experiments
+
+fn _experiment_held[id]
+    e = tracking.experiment[id]
+    if e.id eq ''
+        return error['No Experiment with id=`id` exists', 'missing']
+    return e
+
+fn api_experiment_create[a]
+    tracking.ready[]
+    name = _need[_s[a, 'name'], 'name']
+    if not name.ok
+        return name
+    id = tracking.create_experiment[name, _s[a, 'artifact_location']]
+    if not id.ok
+        if id.kind eq 'exists'
+            return error['Experiment(name=`name`) already exists.', 'exists']
+        return id
+    tags = _pairs_in[a, 'tags']
+    t = tracking.put_tags['experiment', id, '', _keys_of[tags], _values_of[tags], true]
+    if not t.ok
+        return t
+    return '{"experiment_id": `_q[id]`}'
+
+fn api_experiment_get[a]
+    tracking.ready[]
+    e = _experiment_held[_s[a, 'experiment_id']]
+    if not e.ok
+        return e
+    return '{"experiment": `experiment_json[e]`}'
+
+fn api_experiment_by_name[a]
+    tracking.ready[]
+    name = _s[a, 'experiment_name']
+    e = tracking.experiment_named[name]
+    if e.id eq ''
+        return error['Could not find experiment with name \'`name`\'', 'missing']
+    return '{"experiment": `experiment_json[e]`}'
+
+fn _most[a, default]
+    if not _has[a, 'max_results']
+        return default
+    n = _int[a, 'max_results']
+    if n lte 0
+        return default
+    return n
+
+fn api_experiment_search[a]
+    tracking.ready[]
+    shown = _s[a, 'view_type']
+    if shown eq ''
+        shown = 'ACTIVE_ONLY'
+    p = search.find_experiments[_s[a, 'filter'], shown, _texts[a, 'order_by'], _most[a, 1000], _s[a, 'page_token']]
+    if not p.ok
+        return p
+    pieces = for e in p.experiments
+        experiment_json[e]
+    return _paged['experiments', pieces, p.next]
+
+fn api_experiment_update[a]
+    e = _experiment_held[_s[a, 'experiment_id']]
+    if not e.ok
+        return e
+    w = tracking.rename_experiment[e.id, _s[a, 'new_name']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_experiment_delete[a]
+    e = _experiment_held[_s[a, 'experiment_id']]
+    if not e.ok
+        return e
+    w = tracking.delete_experiment[e.id]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_experiment_restore[a]
+    e = _experiment_held[_s[a, 'experiment_id']]
+    if not e.ok
+        return e
+    w = tracking.restore_experiment[e.id]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_experiment_tag[a]
+    e = _experiment_held[_s[a, 'experiment_id']]
+    if not e.ok
+        return e
+    w = tracking.set_tag['experiment', e.id, '', _s[a, 'key'], _s[a, 'value']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_experiment_untag[a]
+    e = _experiment_held[_s[a, 'experiment_id']]
+    if not e.ok
+        return e
+    w = tracking.delete_tag['experiment', e.id, '', _s[a, 'key']]
+    if not w.ok
+        return w
+    return '{}'
+
+--- ------------------------------------------------------------- runs
+
+fn _run_id[a]
+    id = _s[a, 'run_id']
+    if id eq ''
+        id = _s[a, 'run_uuid']
+    return id
+
+fn _run_held[a]
+    id = _run_id[a]
+    r = tracking.run[id]
+    if r.id eq ''
+        return error['Run with id=`id` not found', 'missing']
+    return r
+
+fn api_run_create[a]
+    tracking.ready[]
+    exp = _s[a, 'experiment_id']
+    if exp eq ''
+        exp = '0'
+    tags = _pairs_in[a, 'tags']
+    name = _s[a, 'run_name']
+    rest = []
+    for t in tags
+        if t.key eq 'mlflow.runName'
+            if name eq ''
+                name = t.value
+        else
+            rest = push[rest, t]
+    r = tracking.create_run[exp, name, _s[a, 'user_id'], _int[a, 'start_time']]
+    if not r.ok
+        return r
+    w = tracking.put_tags['run', r.id, '', _keys_of[rest], _values_of[rest], true]
+    if not w.ok
+        return w
+    k = tracking.touch_experiment[exp]
+    return '{"run": `run_json[tracking.run[r.id]]`}'
+
+fn api_run_get[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    return '{"run": `run_json[r]`}'
+
+fn api_run_update[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    u = tracking.update_run[r.id, _s[a, 'status'], _int[a, 'end_time'], _s[a, 'run_name']]
+    if not u.ok
+        return u
+    return '{"run_info": `run_info_json[tracking.run[r.id]]`}'
+
+fn api_run_delete[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    w = tracking.delete_run[r.id]
+    return '{}'
+
+fn api_run_restore[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    w = tracking.restore_run[r.id]
+    return '{}'
+
+fn _metric_of[t]
+    at = tracking.clock[]
+    if _has[t, 'timestamp']
+        at = _int[t, 'timestamp']
+    return tracking.Metric[_s[t, 'key'], _float[t, 'value'], _int[t, 'step'], at]
+
+fn api_log_metric[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    w = tracking.log_metrics_of[r.id, [_metric_of[a]], _s[a, 'model_id']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_log_param[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    w = tracking.log_params_of[r.id, [_s[a, 'key']], [_s[a, 'value']]]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_set_tag[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    key = _s[a, 'key']
+    if key eq 'mlflow.runName'
+        u = tracking.update_run[r.id, '', 0, _s[a, 'value']]
+        if not u.ok
+            return u
+        return '{}'
+    w = tracking.set_tag['run', r.id, '', key, _s[a, 'value']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_delete_tag[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    key = _s[a, 'key']
+    if tracking.tag_value['run', r.id, '', key] eq ''
+        return error['No tag with name: `key` in run with id `r.id`', 'missing']
+    w = tracking.delete_tag['run', r.id, '', key]
+    return '{}'
+
+fn api_log_batch[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    params = _pairs_in[a, 'params']
+    p = tracking.log_params_of[r.id, _keys_of[params], _values_of[params]]
+    if not p.ok
+        return p
+    ms = for t in _items[a, 'metrics']
+        _metric_of[t]
+    m = tracking.log_metrics_of[r.id, ms, '']
+    if not m.ok
+        return m
+    tags = _pairs_in[a, 'tags']
+    rest = []
+    for t in tags
+        if t.key eq 'mlflow.runName'
+            u = tracking.update_run[r.id, '', 0, t.value]
+        else
+            rest = push[rest, t]
+    w = tracking.put_tags['run', r.id, '', _keys_of[rest], _values_of[rest], true]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_log_inputs[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    sets = []
+    for x in _items[a, 'datasets']
+        d = x.dataset
+        if not d.ok
+            return error['a dataset input is sent as {"dataset": …, "tags": […]}', 'invalid']
+        ctx = ''
+        for t in _pairs_in[x, 'tags']
+            if t.key eq 'mlflow.data.context'
+                ctx = t.value
+        sets = push[sets, tracking.Dataset[_s[d, 'name'], _s[d, 'digest'], _s[d, 'source_type'], _s[d, 'source'], _s[d, 'schema'], _s[d, 'profile'], ctx]]
+    w = tracking.log_inputs_of[r.id, sets]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_log_outputs[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    ids = []
+    steps = []
+    for x in _items[a, 'models']
+        ids = push[ids, _s[x, 'model_id']]
+        steps = push[steps, _int[x, 'step']]
+    w = tracking.log_outputs_of[r.id, ids, steps]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_run_search[a]
+    tracking.ready[]
+    shown = _s[a, 'run_view_type']
+    if shown eq ''
+        shown = 'ACTIVE_ONLY'
+    p = search.find_runs[_texts[a, 'experiment_ids'], _s[a, 'filter'], shown, _texts[a, 'order_by'], _most[a, 1000], _s[a, 'page_token']]
+    if not p.ok
+        return p
+    pieces = for r in p.runs
+        run_json[r]
+    return _paged['runs', pieces, p.next]
+
+fn api_metric_history[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    h = tracking.history[r.id, _s[a, 'metric_key']]
+    start = search.page_start[_s[a, 'page_token']]
+    if not start.ok
+        return start
+    p = search.page_of[range[len[h]], start, _most[a, 0]]
+    pieces = for i in p.rows
+        _metric_json[h[i]]
+    if len[pieces] eq 0 and p.next eq ''
+        return '{}'
+    return _paged['metrics', pieces, p.next]
+
+fn api_artifacts_list[a]
+    r = _run_held[a]
+    if not r.ok
+        return r
+    files = tracking.run_files[r.id, _s[a, 'path']]
+    pieces = []
+    for f in files
+        if f.is_dir
+            pieces = push[pieces, '{"path": `_q[f.path]`, "is_dir": true}']
+        else
+            pieces = push[pieces, '{"path": `_q[f.path]`, "is_dir": false, "file_size": `f.size`}']
+    return '{"root_uri": `_q[r.artifacts]`, "files": `_list_json[pieces]`}'
+
+--- ---------------------------------------------------- logged models
+
+fn _logged_held[id]
+    m = tracking.logged_model[id]
+    if m.id eq ''
+        return error['Logged model with ID \'`id`\' not found', 'missing']
+    return m
+
+fn api_logged_create[a]
+    tracking.ready[]
+    exp = _s[a, 'experiment_id']
+    m = tracking.create_logged[exp, _s[a, 'name'], _s[a, 'source_run_id'], _s[a, 'model_type']]
+    if not m.ok
+        return m
+    params = _pairs_in[a, 'params']
+    p = tracking.log_params_of[m.id, _keys_of[params], _values_of[params]]
+    if not p.ok
+        return p
+    tags = _pairs_in[a, 'tags']
+    t = tracking.put_tags['logged_model', m.id, '', _keys_of[tags], _values_of[tags], true]
+    if not t.ok
+        return t
+    return '{"model": `logged_json[tracking.logged_model[m.id]]`}'
+
+fn api_logged_get[id]
+    m = _logged_held[id]
+    if not m.ok
+        return m
+    return '{"model": `logged_json[m]`}'
+
+fn api_logged_finalize[id, a]
+    m = _logged_held[id]
+    if not m.ok
+        return m
+    w = tracking.finalize_logged[id, _s[a, 'status']]
+    if not w.ok
+        return w
+    return '{"model": `logged_json[tracking.logged_model[id]]`}'
+
+fn api_logged_delete[id]
+    m = _logged_held[id]
+    if not m.ok
+        return m
+    w = tracking.delete_logged[id]
+    return '{}'
+
+fn api_logged_tags[id, a]
+    m = _logged_held[id]
+    if not m.ok
+        return m
+    tags = _pairs_in[a, 'tags']
+    t = tracking.put_tags['logged_model', id, '', _keys_of[tags], _values_of[tags], true]
+    if not t.ok
+        return t
+    return '{}'
+
+fn api_logged_untag[id, key]
+    m = _logged_held[id]
+    if not m.ok
+        return m
+    w = tracking.delete_tag['logged_model', id, '', key]
+    return '{}'
+
+fn api_logged_search[a]
+    p = search.find_logged[_texts[a, 'experiment_ids'], _s[a, 'filter'], _texts[a, 'order_by'], _most[a, 100], _s[a, 'page_token']]
+    if not p.ok
+        return p
+    pieces = for m in p.logged
+        logged_json[m]
+    return _paged['models', pieces, p.next]
+
+--- ------------------------------------------------- registered models
+
+fn _model_held[name]
+    m = registry.model_named[name]
+    if m.id eq ''
+        return error['Registered Model with name=`name` not found', 'missing']
+    return m
+
+fn api_model_create[a]
+    tracking.ready[]
+    name = _need[_s[a, 'name'], 'name']
+    if not name.ok
+        return name
+    m = registry.create_model[name, _s[a, 'description']]
+    if not m.ok
+        if m.kind eq 'exists'
+            return error['Registered Model (name=`name`) already exists.', 'exists']
+        return m
+    tags = _pairs_in[a, 'tags']
+    t = tracking.put_tags['registered_model', m.id, '', _keys_of[tags], _values_of[tags], true]
+    if not t.ok
+        return t
+    return '{"registered_model": `model_json[m]`}'
+
+fn api_model_get[a]
+    m = _model_held[_s[a, 'name']]
+    if not m.ok
+        return m
+    return '{"registered_model": `model_json[m]`}'
+
+fn api_model_rename[a]
+    m = registry.rename_model[_s[a, 'name'], _s[a, 'new_name']]
+    if not m.ok
+        return m
+    return '{"registered_model": `model_json[m]`}'
+
+fn api_model_update[a]
+    m = registry.describe_model[_s[a, 'name'], _s[a, 'description']]
+    if not m.ok
+        return m
+    return '{"registered_model": `model_json[m]`}'
+
+fn api_model_delete[a]
+    w = registry.delete_model[_s[a, 'name']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_model_search[a]
+    p = search.find_models[_s[a, 'filter'], _texts[a, 'order_by'], _most[a, 100], _s[a, 'page_token']]
+    if not p.ok
+        return p
+    pieces = for m in p.models
+        model_json[m]
+    return _paged['registered_models', pieces, p.next]
+
+fn api_model_tag[a]
+    m = _model_held[_s[a, 'name']]
+    if not m.ok
+        return m
+    w = tracking.set_tag['registered_model', m.id, '', _s[a, 'key'], _s[a, 'value']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_model_untag[a]
+    m = _model_held[_s[a, 'name']]
+    if not m.ok
+        return m
+    w = tracking.delete_tag['registered_model', m.id, '', _s[a, 'key']]
+    return '{}'
+
+fn api_alias_set[a]
+    w = registry.set_alias[_s[a, 'name'], _s[a, 'alias'], _int[a, 'version']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_alias_get[a]
+    v = registry.version_by_alias[_s[a, 'name'], _s[a, 'alias']]
+    if not v.ok
+        return v
+    return '{"model_version": `version_json[v]`}'
+
+fn api_alias_delete[a]
+    w = registry.delete_alias[_s[a, 'name'], _s[a, 'alias']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_latest_versions[a]
+    m = _model_held[_s[a, 'name']]
+    if not m.ok
+        return m
+    pieces = for v in registry.latest_versions[m.name, _texts[a, 'stages']]
+        version_json[v]
+    return '{"model_versions": `_list_json[pieces]`}'
+
+--- --------------------------------------------------- model versions
+
+fn _version_held[a]
+    name = _s[a, 'name']
+    m = _model_held[name]
+    if not m.ok
+        return m
+    number = _int[a, 'version']
+    v = registry.version_of[name, number]
+    if v.model eq ''
+        said = _s[a, 'version']
+        return error['Model Version (name=`name`, version=`said`) not found', 'missing']
+    return v
+
+fn api_version_create[a]
+    name = _s[a, 'name']
+    m = _model_held[name]
+    if not m.ok
+        return m
+    v = registry.create_version[name, _s[a, 'source'], _s[a, 'run_id'], _s[a, 'model_id'], _s[a, 'description'], '']
+    if not v.ok
+        return v
+    tags = _pairs_in[a, 'tags']
+    t = tracking.put_tags['model_version', m.id, '`v.version`', _keys_of[tags], _values_of[tags], true]
+    if not t.ok
+        return t
+    return '{"model_version": `version_json[registry.version_of[name, v.version]]`}'
+
+fn api_version_get[a]
+    v = _version_held[a]
+    if not v.ok
+        return v
+    return '{"model_version": `version_json[v]`}'
+
+fn api_version_update[a]
+    v = _version_held[a]
+    if not v.ok
+        return v
+    u = registry.describe_version[v.name, v.version, _s[a, 'description']]
+    if not u.ok
+        return u
+    return '{"model_version": `version_json[registry.version_of[v.name, v.version]]`}'
+
+fn api_version_delete[a]
+    v = _version_held[a]
+    if not v.ok
+        return v
+    w = registry.delete_version[v.name, v.version]
+    return '{}'
+
+fn api_version_search[a]
+    p = search.find_versions[_s[a, 'filter'], _texts[a, 'order_by'], _most[a, 10000], _s[a, 'page_token']]
+    if not p.ok
+        return p
+    pieces = for v in p.versions
+        version_json[v]
+    return _paged['model_versions', pieces, p.next]
+
+fn api_version_uri[a]
+    v = _version_held[a]
+    if not v.ok
+        return v
+    place = registry.source_place[v.source, v.run]
+    if not place.ok
+        return place
+    return '{"artifact_uri": `_q[place]`}'
+
+fn api_version_tag[a]
+    v = _version_held[a]
+    if not v.ok
+        return v
+    w = tracking.set_tag['model_version', v.model, '`v.version`', _s[a, 'key'], _s[a, 'value']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_version_untag[a]
+    v = _version_held[a]
+    if not v.ok
+        return v
+    w = tracking.delete_tag['model_version', v.model, '`v.version`', _s[a, 'key']]
+    return '{}'
+
+fn api_version_stage[a]
+    v = _version_held[a]
+    if not v.ok
+        return v
+    s = registry.transition[v.name, v.version, _s[a, 'stage'], _truth[a, 'archive_existing_versions']]
+    if not s.ok
+        return s
+    return '{"model_version": `version_json[registry.version_of[v.name, v.version]]`}'
+
+--- ----------------------------------------------------------- traces
+
+fn api_trace_start[a]
+    tracking.ready[]
+    tr = a['trace']
+    if not tr.ok
+        return error['a trace is sent as {"trace": {"trace_info": …}}', 'invalid']
+    info = tr.trace_info
+    if not info.ok
+        return error['a trace is sent as {"trace": {"trace_info": …}}', 'invalid']
+    place = info.trace_location
+    exp = ''
+    if place.ok
+        inner = place.mlflow_experiment
+        if inner.ok
+            exp = _s[inner, 'experiment_id']
+    meta = _map_pairs[info, 'trace_metadata']
+    pieces = for p in meta
+        '`_q[p.key]`: `_q[p.value]`'
+    joined = join[pieces, ', ']
+    tags = _map_pairs[info, 'tags']
+    name = ''
+    for t in tags
+        if t.key eq 'mlflow.traceName'
+            name = t.value
+    began = tracking.clock[]
+    if _has[info, 'request_time']
+        began = ms_of_iso[_s[info, 'request_time']]
+    t = traces.record_trace[traces.TraceInfo[_s[info, 'trace_id'], exp, name, began, duration_ms[_s[info, 'execution_duration']], _s[info, 'state'], _s[info, 'request_preview'], _s[info, 'response_preview'], _s[info, 'client_request_id'], '{`joined`}', '', 'active']]
+    if not t.ok
+        return t
+    rest = []
+    for p in tags
+        if p.key ne 'mlflow.artifactLocation' and p.key ne 'mlflow.trace.spansLocation'
+            rest = push[rest, p]
+    w = tracking.put_tags['trace', t.id, '', _keys_of[rest], _values_of[rest], true]
+    if not w.ok
+        return w
+    return '{"trace": {"trace_info": `trace_info_json[traces.trace_of[t.id]]`}}'
+
+fn _trace_held[id]
+    t = traces.trace_of[id]
+    if t.id eq ''
+        return error['Trace with ID `id` not found.', 'missing']
+    return t
+
+fn api_trace_get[id]
+    t = _trace_held[id]
+    if not t.ok
+        return t
+    return '{"trace": {"trace_info": `trace_info_json[t]`}}'
+
+fn api_trace_batch[ids]
+    pieces = []
+    for id in ids
+        t = traces.trace_of[id]
+        if t.id ne ''
+            pieces = push[pieces, '{"trace_info": `trace_info_json[t]`}']
+    return '{"traces": `_list_json[pieces]`}'
+
+fn api_trace_search[a]
+    exps = _texts[a, 'experiment_ids']
+    for place in _items[a, 'locations']
+        inner = place.mlflow_experiment
+        if inner.ok
+            exps = push[exps, _s[inner, 'experiment_id']]
+    p = search.find_traces[exps, _s[a, 'filter'], _texts[a, 'order_by'], _most[a, 100], _s[a, 'page_token']]
+    if not p.ok
+        return p
+    pieces = for t in p.traces
+        trace_info_json[t]
+    return _paged['traces', pieces, p.next]
+
+fn api_trace_delete[a]
+    ids = _texts[a, 'trace_ids']
+    for id in _texts[a, 'request_ids']
+        ids = push[ids, id]
+    n = traces.delete_traces[_s[a, 'experiment_id'], ids, _int[a, 'max_timestamp_millis']]
+    return '{"traces_deleted": `n`}'
+
+fn api_trace_tag[id, a]
+    t = _trace_held[id]
+    if not t.ok
+        return t
+    w = tracking.set_tag['trace', id, '', _s[a, 'key'], _s[a, 'value']]
+    if not w.ok
+        return w
+    return '{}'
+
+fn api_trace_untag[id, key]
+    t = _trace_held[id]
+    if not t.ok
+        return t
+    w = tracking.delete_tag['trace', id, '', key]
+    return '{}'
+
+fn assessment_json[x]
+    body = '"feedback": {"value": `x.value`}'
+    if x.assessment_type eq 'expectation'
+        body = '"expectation": {"value": `x.value`}'
+    out = '{"assessment_id": `_q[x.id]`, "assessment_name": `_q[x.name]`, "trace_id": `_q[x.trace_id]`, "source": {"source_type": `_q[x.source_type]`, "source_id": `_q[x.source_id]`}, "create_time": `_q[iso_of[x.created]]`, "last_update_time": `_q[iso_of[x.created]]`, `body`'
+    if x.rationale ne ''
+        out = '`out`, "rationale": `_q[x.rationale]`'
+    if x.span ne ''
+        out = '`out`, "span_id": `_q[x.span]`'
+    return '`out`}'
+
+fn api_assessment_create[id, a]
+    x = a.assessment
+    if not x.ok
+        return error['an assessment is sent as {"assessment": …}', 'invalid']
+    sort_of = 'feedback'
+    value = 'null'
+    fb = x.feedback
+    if fb.ok
+        e = encode[fb.value]
+        if e.ok
+            value = e
+    else
+        ex = x.expectation
+        if ex.ok
+            sort_of = 'expectation'
+            e2 = encode[ex.value]
+            if e2.ok
+                value = e2
+    who = 'HUMAN'
+    whose = ''
+    src = x.source
+    if src.ok
+        who = _s[src, 'source_type']
+        whose = _s[src, 'source_id']
+    made = traces.assess[id, _s[x, 'assessment_name'], sort_of, value, who, whose, _s[x, 'rationale'], _s[x, 'span_id']]
+    if not made.ok
+        return made
+    return '{"assessment": `assessment_json[made]`}'
+
+fn api_assessment_get[id, aid]
+    for x in traces.assessments_of[id]
+        if x.id eq aid
+            return '{"assessment": `assessment_json[x]`}'
+    return error['Assessment with ID `aid` not found', 'missing']
+
+fn api_assessment_delete[id, aid]
+    w = traces.delete_assessment[id, aid]
+    if not w.ok
+        return w
+    return '{}'
+
+--- ---------------------------------------------------------- answers
+
+fn error_code[sort_of]
+    if sort_of eq 'missing'
+        return 'RESOURCE_DOES_NOT_EXIST'
+    if sort_of eq 'exists'
+        return 'RESOURCE_ALREADY_EXISTS'
+    if sort_of eq 'invalid'
+        return 'INVALID_PARAMETER_VALUE'
+    return 'INTERNAL_ERROR'
+
+fn error_status[sort_of]
+    if sort_of eq 'missing'
+        return 404
+    if sort_of eq 'exists' or sort_of eq 'invalid'
+        return 400
+    return 500
+
+fn error_json[sort_of, reason]
+    return '{"error_code": `_q[error_code[sort_of]]`, "message": `_q[reason]`}'
+
+--- ------------------------------------------------------------ handlers
+
+--- each route's handler: the request's arguments to its endpoint, the
+--- answer as JSON, a failure as MLflow's error body with its status
+
+--- the MLflow version Myna answers as: its client asks before it uses
+--- the newer endpoints
+fn h_version[req]
+    return text['3.18.0']
+
+fn h_experiment_create[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_create[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_experiment_get[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_get[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_experiment_by_name[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_by_name[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_experiment_search[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_search[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_experiment_update[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_update[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_experiment_delete[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_delete[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_experiment_restore[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_restore[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_experiment_tag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_tag[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_experiment_untag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_experiment_untag[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_run_create[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_run_create[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_run_get[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_run_get[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_run_update[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_run_update[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_run_delete[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_run_delete[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_run_restore[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_run_restore[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_log_metric[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_log_metric[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_log_param[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_log_param[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_set_tag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_set_tag[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_delete_tag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_delete_tag[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_log_batch[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_log_batch[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_log_inputs[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_log_inputs[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_log_outputs[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_log_outputs[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_run_search[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_run_search[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_metric_history[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_metric_history[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_artifacts_list[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_artifacts_list[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_logged_create[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_logged_create[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_logged_search[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_logged_search[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_logged_get[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_logged_get[req.params.id]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_logged_finalize[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_logged_finalize[req.params.id, a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_logged_delete[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_logged_delete[req.params.id]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_logged_tags[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_logged_tags[req.params.id, a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_logged_untag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_logged_untag[req.params.id, req.params.key]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_model_create[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_model_create[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_model_get[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_model_get[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_model_rename[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_model_rename[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_model_update[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_model_update[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_model_delete[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_model_delete[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_model_search[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_model_search[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_model_tag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_model_tag[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_model_untag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_model_untag[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_alias_set[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_alias_set[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_alias_get[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_alias_get[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_alias_delete[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_alias_delete[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_latest_versions[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_latest_versions[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_create[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_create[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_get[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_get[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_update[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_update[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_delete[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_delete[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_search[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_search[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_uri[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_uri[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_tag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_tag[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_untag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_untag[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_version_stage[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_version_stage[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_trace_start[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_trace_start[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_trace_search[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_trace_search[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_trace_delete[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_trace_delete[a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_trace_batch[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_trace_batch[_texts[a, 'trace_ids']]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_trace_get[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_trace_get[_s[a, 'trace_id']]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_trace_tag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_trace_tag[req.params.id, a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_trace_untag[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_trace_untag[req.params.id, _s[a, 'key']]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_assessment_create[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_assessment_create[req.params.id, a]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_assessment_get[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_assessment_get[req.params.id, req.params.aid]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+fn h_assessment_delete[req]
+    a = args_of[req.body, encode[req.query]]
+    v = api_assessment_delete[req.params.id, req.params.aid]
+    if not v.ok
+        return respond[error_status[v.kind], error_json[v.kind, v.reason]]
+    return json[json[v]]
+
+test the_api_answers_as_mlflow_does[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    missing = api_experiment_by_name[json['{"experiment_name": "nope"}']]
+    assert[missing.kind eq 'missing']
+    made = json[api_experiment_create[json['{"name": "check", "tags": [{"key": "team", "value": "a"}, {"key": "team", "value": "b"}]}']]]
+    exp = '`made.experiment_id`'
+    again = api_experiment_create[json['{"name": "check"}']]
+    assert[again.kind eq 'exists']
+    got = json[api_experiment_get[json['{"experiment_id": "`exp`"}']]]
+    assert['`got.experiment.name`' eq 'check']
+    assert['`got.experiment.tags[0].value`' eq 'b']
+    r = json[api_run_create[json['{"experiment_id": "`exp`", "user_id": "ada", "start_time": 5, "tags": [{"key": "mlflow.runName", "value": "first"}, {"key": "mlflow.source.name", "value": "a.py"}]}']]]
+    id = '`r.run.info.run_id`'
+    assert['`r.run.info.run_name`' eq 'first']
+    assert[api_log_param[json['{"run_id": "`id`", "key": "alpha", "value": "0.5"}']] eq '{}']
+    changed = api_log_param[json['{"run_id": "`id`", "key": "alpha", "value": "0.6"}']]
+    assert[changed.kind eq 'invalid']
+    ks = for i in range[251]
+        'k'
+    long_key = join[ks, '']
+    big = api_log_param[json['{"run_id": "`id`", "key": "`long_key`", "value": "1"}']]
+    assert[big.kind eq 'invalid']
+    m0 = api_log_metric[json['{"run_id": "`id`", "key": "loss", "value": 1.0, "timestamp": 0, "step": 0}']]
+    m1 = api_log_metric[json['{"run_id": "`id`", "key": "loss", "value": "NaN", "timestamp": 7, "step": 1}']]
+    h = json[api_metric_history[json['{"run_id": "`id`", "metric_key": "loss"}']]]
+    assert[len[h.metrics] eq 2]
+    assert['`h.metrics[0].timestamp`' eq '0']
+    assert['`h.metrics[1].value`' eq 'NaN']
+    none_yet = api_metric_history[json['{"run_id": "`id`", "metric_key": "never"}']]
+    assert[none_yet eq '{}']
+    b = api_log_batch[json['{"run_id": "`id`", "params": [{"key": "layers", "value": "3"}], "metrics": [{"key": "rmse", "value": 0.25, "timestamp": 9, "step": 0}], "tags": [{"key": "note", "value": "a\\nb \\"c\\" é"}]}']]
+    assert[b eq '{}']
+    whole = json[api_run_get[json['{"run_id": "`id`"}']]]
+    note = ''
+    for t in whole.run.data.tags
+        if '`t.key`' eq 'note'
+            note = '`t.value`'
+    assert[note eq 'a\nb "c" é']
+    assert[encode[whole.run.inputs] eq '{}']
+    s = json[api_run_search[json['{"experiment_ids": ["`exp`"], "filter": "metrics.rmse < 1 and params.alpha = \'0.5\'", "order_by": ["metrics.rmse ASC"]}']]]
+    assert[len[s.runs] eq 1]
+    bad = api_run_search[json['{"experiment_ids": ["`exp`"], "filter": "metrics.rmse IS NULL"}']]
+    assert[bad.kind eq 'invalid']
+    u = json[api_run_update[json['{"run_id": "`id`", "status": "FINISHED", "end_time": 99}']]]
+    assert['`u.run_info.status`' eq 'FINISHED']
+    lm = json[api_logged_create[json['{"experiment_id": "`exp`", "name": "model", "source_run_id": "`id`", "params": [{"key": "alpha", "value": "0.5"}]}']]]
+    mid = '`lm.model.info.model_id`'
+    fin = json[api_logged_finalize[mid, json['{"status": "LOGGED_MODEL_READY"}']]]
+    assert['`fin.model.info.status`' eq 'LOGGED_MODEL_READY']
+    rm1 = json[api_model_create[json['{"name": "price"}']]]
+    v = json[api_version_create[json['{"name": "price", "source": "models:/`mid`", "model_id": "`mid`"}']]]
+    assert['`v.model_version.version`' eq '1']
+    assert['`v.model_version.run_id`' eq id]
+    al = api_alias_set[json['{"name": "price", "alias": "champion", "version": "1"}']]
+    byal = json[api_alias_get[json['{"name": "price", "alias": "champion"}']]]
+    assert['`byal.model_version.aliases[0]`' eq 'champion']
+    uri = json[api_version_uri[json['{"name": "price", "version": "1"}']]]
+    assert[ends['`uri.artifact_uri`', '/models/`mid`/artifacts']]
+    p = json[api_model_create[json['{"name": "greet", "tags": [{"key": "mlflow.prompt.is_prompt", "value": "true"}]}']]]
+    pv = json[api_version_create[json['{"name": "greet", "source": "dummy-source", "tags": [{"key": "mlflow.prompt.text", "value": "Hello {{name}}!"}]}']]]
+    assert['`pv.model_version.version`' eq '1']
+    found = json[api_model_search[json['{"filter": "tags.\`mlflow.prompt.is_prompt\` != \'true\'"}']]]
+    assert[len[found.registered_models] eq 1]
+    gm = json[api_model_get[json['{"name": "price"}']]]
+    assert['`gm.registered_model.aliases[0].alias`' eq 'champion']
+    dv = api_version_delete[json['{"name": "price", "version": "1"}']]
+    gone_alias = api_alias_get[json['{"name": "price", "alias": "champion"}']]
+    assert[gone_alias.kind eq 'missing']
+    tr = json[api_trace_start[json['{"trace": {"trace_info": {"trace_id": "tr-abc", "trace_location": {"type": "MLFLOW_EXPERIMENT", "mlflow_experiment": {"experiment_id": "`exp`"}}, "request_time": "2026-11-06T22:34:56.762Z", "execution_duration": "1.5s", "state": "OK", "trace_metadata": {"mlflow.user": "ada"}, "tags": {"mlflow.traceName": "add"}, "request_preview": "{}", "response_preview": "5"}}}']]]
+    ti = tr['trace'].trace_info
+    assert['`ti.execution_duration`' eq '1.500s']
+    assert['`ti.request_time`' eq '2026-11-06T22:34:56.762Z']
+    held_at = ti.tags['mlflow.artifactLocation']
+    assert[ends['`held_at`', '/traces/tr-abc/artifacts']]
+    ts = json[api_trace_search[json['{"locations": [{"type": "MLFLOW_EXPERIMENT", "mlflow_experiment": {"experiment_id": "`exp`"}}]}']]]
+    assert[len[ts.traces] eq 1]
+    assert[duration_text[233] eq '0.233s' and duration_text[2000] eq '2s' and duration_text[1050] eq '1.050s']
+    assert[error_status['missing'] eq 404 and error_code['exists'] eq 'RESOURCE_ALREADY_EXISTS']

@@ -1,0 +1,384 @@
+--- Models as Myna serves them: a model is a folder of files a run keeps —
+--- `MLmodel`, which says what the folder is, and `predict.co`, a Crow
+--- program whose `predict[rows]` answers one prediction per row, beside
+--- whatever data it reads (its weights). MLflow's own model format is the
+--- same folder with its `MLmodel` file; Myna's flavor is `crow`, and no
+--- Python flavor is read (Myna builds on Crow alone).
+---
+--- A version is served by running its `predict.co` on the rows asked
+--- about, by the crow on the PATH, in a scratch copy of the folder and
+--- under a time limit, as a notebook is run. The rows come as MLflow's
+--- scoring server takes them (`dataframe_split`, `dataframe_records`,
+--- `instances`, `inputs`), and the answer is `{"predictions": […]}`.
+--- `evaluate` scores a model's predictions against the truth with
+--- scikit-learn's definitions and logs them to a run, as
+--- `mlflow.evaluate` does.
+use web
+use math
+use myna.workspace
+use myna.tracking
+use myna.registry
+
+struct Scored [key, value]
+
+--- ------------------------------------------------------------- saving
+
+fn _q[s]
+    return encode[s]
+
+--- the MLmodel file of a Crow model: its flavor, the program and data it
+--- holds, the run it came from, and the signature of what it takes and
+--- answers (each column as `name:type`, MLflow's column types)
+fn mlmodel_text[run_id, path, data_name, inputs, outputs]
+    nl = '\n'
+    cols = for c in inputs
+        _column_json[c]
+    outs = for c in outputs
+        _column_json[c]
+    lines = [
+        'artifact_path: `path`',
+        'flavors:',
+        '  crow:',
+        '    code: predict.co',
+        '    data: `data_name`',
+        '    predict: predict',
+        'model_uuid: `tracking.new_id[]`',
+        'run_id: `run_id`',
+        'utc_time_created: \'`str[now[]]`\'',
+        'signature:',
+        '  inputs: \'[`join[cols, \', \']`]\'',
+        '  outputs: \'[`join[outs, \', \']`]\'',
+        '']
+    return join[lines, nl]
+
+fn _column_json[c]
+    pieces = split[c, ':']
+    if len[pieces] lt 2
+        return '{"type": "double"}'
+    if trim[pieces[0]] eq ''
+        return '{"type": `_q[trim[pieces[1]]]`}'
+    return '{"name": `_q[trim[pieces[0]]]`, "type": `_q[trim[pieces[1]]]`}'
+
+--- a Crow model kept in a run's files at `path`: its MLmodel, its program
+--- and its data; the path, or why not
+fn save_model[run_id, path, code, data_name, data, inputs, outputs]
+    r = tracking.run[run_id]
+    if r.id eq ''
+        return error['no run with id \'`run_id`\'', 'missing']
+    if not ('fn predict[' in code)
+        return error['a Crow model\'s program defines predict[rows]', 'invalid']
+    m = tracking.write_file[r.artifacts, '`path`/MLmodel', mlmodel_text[run_id, path, data_name, inputs, outputs]]
+    if not m.ok
+        return m
+    c = tracking.write_file[r.artifacts, '`path`/predict.co', code]
+    if not c.ok
+        return c
+    if data_name ne ''
+        d = tracking.write_file[r.artifacts, '`path`/`data_name`', data]
+        if not d.ok
+            return d
+    return path
+
+--- whether a folder holds a Crow model
+fn is_crow_model[folder]
+    t = read['`folder`/MLmodel']
+    if not t.ok
+        return false
+    return '  crow:' in t and exists['`folder`/predict.co']
+
+--- ------------------------------------------------------------- reading
+
+fn _texts_of[v]
+    found = []
+    i = 0
+    while i lt len[v]
+        x = v[i]
+        i = i + 1
+        if not x.ok
+            found = push[found, 'null']
+            continue
+        found = push[found, encode[x]]
+    return found
+
+--- the rows a scoring request holds, as the JSON text of a list of
+--- records — MLflow's four shapes; why not, where it is none of them
+fn records_of[body]
+    j = json[body]
+    if not j.ok
+        return error['the request is no JSON: `j.reason`', 'invalid']
+    split_form = j['dataframe_split']
+    if split_form.ok
+        return _records_of_split[split_form]
+    records = j['dataframe_records']
+    if records.ok
+        return encode[records]
+    for key in ['instances', 'inputs']
+        given = j[key]
+        if given.ok
+            t = trim[encode[given]]
+            if starts[t, '[']
+                return t
+            return '[`t`]'
+    return error['a scoring request holds dataframe_split, dataframe_records, instances or inputs', 'invalid']
+
+fn _records_of_split[s]
+    cols = s['columns']
+    data = s['data']
+    if not data.ok
+        return error['dataframe_split holds no data', 'invalid']
+    names = []
+    if cols.ok
+        names = for t in _texts_of[cols]
+            t
+    rows = []
+    i = 0
+    while i lt len[data]
+        row = data[i]
+        i = i + 1
+        if not row.ok
+            continue
+        cells = _texts_of[row]
+        pairs = []
+        for k in range[len[cells]]
+            name = '`k`'
+            if k lt len[names]
+                name = names[k]
+            if not starts[name, '"']
+                name = _q[name]
+            pairs = push[pairs, '`name`: `cells[k]`']
+        rows = push[rows, '{`join[pairs, \', \']`}']
+    return '[`join[rows, \', \']`]'
+
+--- ------------------------------------------------------------- running
+
+--- the program that runs a model: its rows read, predict asked, the
+--- answer printed behind a mark the server looks for
+fn _driver[]
+    nl = '\n'
+    lines = [
+        'use predict',
+        'rows = json[read[\'input.json\']]',
+        'out = predict.predict[rows]',
+        'log[\'MYNA_PREDICTIONS \`encode[out]\`\']',
+        '']
+    return join[lines, nl]
+
+--- a model's predictions for the rows (the JSON text of a list of
+--- records): the JSON text of the list it answers, or why not
+fn predict_in[folder, rows, limit]
+    if not is_crow_model[folder]
+        return error['the folder holds no Crow model (an MLmodel with a crow flavor, and predict.co)', 'invalid']
+    if not exists['`workspace.home[]`/.serving']
+        made = mkdir['`workspace.home[]`/.serving']
+    place = '`workspace.home[]`/.serving/`tracking.new_id[]`'
+    copied = shell['cp -R \'`folder`\' \'`place`\'']
+    if copied.status ne 0
+        return error['the model was not copied: `trim[copied.stderr]`', 'invalid']
+    w1 = write['`place`/input.json', rows]
+    w2 = write['`place`/_serve.co', _driver[]]
+    r = shell['cd \'`place`\' && perl -e \'alarm shift; exec @ARGV\' `limit` crow run -i _serve.co 2>&1']
+    gone = rm[place]
+    if not r.ok
+        return error[r.reason, 'invalid']
+    said = r.stdout
+    for line in split[said, '\n']
+        if starts[line, 'MYNA_PREDICTIONS ']
+            answer = slice[line, 17, len[line]]
+            if starts[answer, 'error:']
+                return error['predict stopped: `answer`', 'invalid']
+            return answer
+    return error['predict answered nothing: `trim[said]`', 'invalid']
+
+--- the predictions of a registered model's version (a number, `latest`,
+--- an alias or `v<n>`) for the rows of a scoring request: MLflow's answer
+fn score[name, ref, body]
+    rows = records_of[body]
+    if not rows.ok
+        return rows
+    named = ref
+    if starts[named, '@']
+        named = slice[named, 1, len[named]]
+    folder = registry.model_folder[name, named]
+    if not folder.ok
+        return folder
+    p = predict_in[folder, rows, 60]
+    if not p.ok
+        return p
+    return '{"predictions": `p`}'
+
+--- the route a registered model is served at: the scoring server's
+--- `/invocations`, under the model's name and a version's reference
+fn h_invocations[req]
+    s = score[req.params.model, req.params.ref, req.body]
+    if not s.ok
+        code = 400
+        if s.kind eq 'missing'
+            code = 404
+        return respond[code, '{"error_code": "BAD_REQUEST", "message": `_q[s.reason]`}']
+    return respond[200, s]
+
+--- ------------------------------------------------------------ scoring
+
+--- a list of numbers read from a JSON list's text (null and text that is
+--- no number are NaN)
+fn numbers_of[given]
+    found = []
+    j = json[given]
+    if not j.ok
+        return found
+    for t in _texts_of[j]
+        found = push[found, _number_or_nan[t]]
+    return found
+
+fn _number_or_nan[t]
+    v = float[trim[t]]
+    if not v.ok
+        return 0.0 / 0.0
+    return v
+
+--- a regressor's scores, as scikit-learn defines them: mean squared
+--- error, its root, mean absolute error, R², the largest error and the
+--- mean absolute percentage error (each |y| at least the float's epsilon)
+fn regressor_scores[truth, predicted]
+    n = len[truth]
+    if len[predicted] ne n or n eq 0
+        return error['the truth and the predictions differ in length: `n` against `len[predicted]`', 'invalid']
+    eps = 2.220446049250313 / 10000000000000000.0
+    squares = 0.0
+    absolute = 0.0
+    percent = 0.0
+    largest = 0.0
+    total = 0.0
+    for i in range[n]
+        total = total + truth[i]
+    centre = total / float[n]
+    spread = 0.0
+    for i in range[n]
+        d = truth[i] - predicted[i]
+        squares = squares + d * d
+        a = abs[d]
+        absolute = absolute + a
+        if a gt largest
+            largest = a
+        scale = abs[truth[i]]
+        if scale lt eps
+            scale = eps
+        percent = percent + a / scale
+        s = truth[i] - centre
+        spread = spread + s * s
+    mse = squares / float[n]
+    r2 = 1.0 - squares / spread
+    if spread eq 0.0
+        r2 = 0.0
+        if squares eq 0.0
+            r2 = 1.0
+    return [
+        Scored['mean_squared_error', mse],
+        Scored['root_mean_squared_error', sqrt[mse]],
+        Scored['mean_absolute_error', absolute / float[n]],
+        Scored['r2_score', r2],
+        Scored['max_error', largest],
+        Scored['mean_absolute_percentage_error', percent / float[n]]]
+
+--- a classifier's scores for two classes, 1 the positive one, as
+--- scikit-learn defines them (a score whose denominator is 0 is 0)
+fn classifier_scores[truth, predicted]
+    n = len[truth]
+    if len[predicted] ne n or n eq 0
+        return error['the truth and the predictions differ in length: `n` against `len[predicted]`', 'invalid']
+    tp = 0
+    fp = 0
+    fn_ = 0
+    right = 0
+    for i in range[n]
+        if truth[i] eq predicted[i]
+            right = right + 1
+        if predicted[i] eq 1.0 and truth[i] eq 1.0
+            tp = tp + 1
+        if predicted[i] eq 1.0 and truth[i] ne 1.0
+            fp = fp + 1
+        if predicted[i] ne 1.0 and truth[i] eq 1.0
+            fn_ = fn_ + 1
+    precision = 0.0
+    if tp + fp gt 0
+        precision = float[tp] / float[tp + fp]
+    recall = 0.0
+    if tp + fn_ gt 0
+        recall = float[tp] / float[tp + fn_]
+    f1 = 0.0
+    if 2 * tp + fp + fn_ gt 0
+        f1 = float[2 * tp] / float[2 * tp + fp + fn_]
+    return [
+        Scored['accuracy_score', float[right] / float[n]],
+        Scored['precision_score', precision],
+        Scored['recall_score', recall],
+        Scored['f1_score', f1],
+        Scored['example_count', float[n]]]
+
+--- a registered model's version scored on rows whose truth is known: the
+--- predictions asked, scored as a regressor or a classifier, each score
+--- logged as a metric of the run given; the scores, or why not
+fn evaluate[name, ref, rows, truth, model_type, run_id]
+    folder = registry.model_folder[name, ref]
+    if not folder.ok
+        return folder
+    p = predict_in[folder, rows, 120]
+    if not p.ok
+        return p
+    predicted = numbers_of[p]
+    scores = regressor_scores[truth, predicted]
+    if model_type eq 'classifier'
+        scores = classifier_scores[truth, predicted]
+    if not scores.ok
+        return scores
+    if run_id ne ''
+        for s in scores
+            m = tracking.log_metric[run_id, s.key, s.value, 0]
+    return scores
+
+test models_are_saved_served_and_scored[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    tracking.ready[]
+    --- the scoring server's four shapes read as records
+    assert[records_of['{"dataframe_split": {"columns": ["a", "b"], "data": [[1, 2], [3, 4]]}}'] eq '[{"a": 1, "b": 2}, {"a": 3, "b": 4}]']
+    assert[records_of['{"dataframe_records": [{"a": 1}]}'] eq '[{"a":1}]']
+    assert[records_of['{"instances": [{"a": 1}]}'] eq '[{"a":1}]']
+    assert[records_of['{"inputs": {"a": 1}}'] eq '[{"a":1}]']
+    assert[records_of['{"rows": []}'].kind eq 'invalid']
+    assert[records_of['nope'].kind eq 'invalid']
+    --- a model of one weight: twice the input, plus the bias it reads
+    code = 'fn predict[rows]\n    b = float[read[\'bias.txt\']]\n    out = []\n    i = 0\n    while i lt len[rows]\n        r = rows[i]\n        i = i + 1\n        x = float[\'\`r.x\`\']\n        out = push[out, 2.0 * x + b]\n    return out\n'
+    one = tracking.start_run['houses', 'double']
+    saved = save_model[one, 'model', code, 'bias.txt', '0.5', ['x:double'], [':double']]
+    assert[saved eq 'model']
+    r = tracking.run[one]
+    assert[is_crow_model['`r.artifacts`/model']]
+    assert['crow:' in tracking.file_text[r.artifacts, 'model/MLmodel']]
+    assert[save_model[one, 'bad', 'fn other[]\n', '', '', [], []].kind eq 'invalid']
+    v = registry.register[one, 'model', 'doubler']
+    assert[v.version eq 1]
+    a = registry.set_alias['doubler', 'champion', 1]
+    s = score['doubler', '@champion', '{"dataframe_split": {"columns": ["x"], "data": [[1], [2.5]]}}']
+    assert[s eq '{"predictions": [2.5,5.5]}']
+    assert[score['doubler', 'nosuch', '{"inputs": []}'].kind eq 'missing']
+    assert[score['nobody', '1', '{"inputs": []}'].kind eq 'missing']
+    --- scores as scikit-learn computes them
+    rs = regressor_scores[[3.0, -0.5, 2.0, 7.0], [2.5, 0.0, 2.0, 8.0]]
+    assert[rs[0].key eq 'mean_squared_error' and rs[0].value eq 0.375]
+    assert[rs[2].value eq 0.5]
+    assert[abs[rs[3].value - 0.9486081370449679] lt 0.000000000001]
+    assert[rs[4].value eq 1.0]
+    flat = regressor_scores[[1.0, 1.0], [1.0, 1.0]]
+    assert[flat[3].value eq 1.0]
+    cs = classifier_scores[[1.0, 0.0, 1.0, 1.0], [1.0, 1.0, 0.0, 1.0]]
+    assert[cs[0].value eq 0.5]
+    assert[abs[cs[1].value - 2.0 / 3.0] lt 0.000000000001]
+    assert[abs[cs[3].value - 2.0 / 3.0] lt 0.000000000001]
+    none_right = classifier_scores[[0.0], [0.0]]
+    assert[none_right[1].value eq 0.0 and none_right[3].value eq 0.0]
+    ev = evaluate['doubler', '1', '[{"x": 1}, {"x": 2}]', [2.5, 4.0], 'regressor', one]
+    assert[ev[0].value eq 0.125]
+    assert[tracking.history[one, 'max_error'][0].value eq 0.5]
+    gone = rm[workspace.home[]]

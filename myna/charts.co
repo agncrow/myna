@@ -1,0 +1,220 @@
+--- Charts of a run's metrics, drawn in Crow as SVG: one line per series
+--- over a number axis (a step, seconds since the start, or a time), which
+--- the workbench's own `chart` does not draw — it takes moments on x. The
+--- picture is handed to the page as an image (`data:` URL), so the same
+--- markup reaches both modes. A NaN or an infinity is a gap in its line;
+--- the axes are fitted to the values; a series sorted by x first.
+use web, ui, math
+
+struct Series [name, xs, ys]
+
+--- the colours of the series in turn: mid tones, read on a light page and
+--- a dark one alike (an image cannot read the page's style tokens)
+fn colour_of[i]
+    colours = ['#3b82f6', '#f97316', '#10b981', '#e11d48', '#8b5cf6', '#ca8a04', '#0891b2', '#db2777']
+    return colours[i % len[colours]]
+
+--- a number that is neither NaN nor an infinity (either less itself is NaN)
+fn _finite[v]
+    return v - v eq 0.0
+
+--- a number to so many places: rounded through its scale (`round` of a
+--- float answers a whole number)
+fn _to[v, scale]
+    return float[round[v * scale]] / scale
+
+fn _fixed[v]
+    return str[_to[v, 100.0]]
+
+--- a number on an axis, short: 1200 is 1.2k, 0.000123 is 1.23e-4
+fn tick_text[v]
+    a = abs[v]
+    if a eq 0.0
+        return '0'
+    if a gte 1000000.0
+        return '`_to[v / 1000000.0, 100.0]`M'
+    if a gte 1000.0
+        return '`_to[v / 1000.0, 100.0]`k'
+    if a gte 0.01
+        return str[_to[v, 1000.0]]
+    power = floor[log10[a]]
+    m = v / (10.0 ^ power)
+    return '`_to[m, 100.0]`e`int[power]`'
+
+--- the series' points sorted by x, each list's pairs kept together
+fn sorted_series[s]
+    n = len[s.xs]
+    if len[s.ys] lt n
+        n = len[s.ys]
+    order = for i in range[n]
+        i
+    sorted_order = sort_by_x[order, s.xs]
+    xs = for i in sorted_order
+        s.xs[i]
+    ys = for i in sorted_order
+        s.ys[i]
+    return Series[s.name, xs, ys]
+
+--- positions sorted by their x, ties in the order logged (an insertion
+--- sort: a run's metric has its points nearly in order already)
+fn sort_by_x[order, xs]
+    out = order
+    i = 1
+    while i lt len[out]
+        j = i
+        while j gt 0 and xs[out[j - 1]] gt xs[out[j]]
+            held = out[j]
+            out[j] = out[j - 1]
+            out[j - 1] = held
+            j = j - 1
+        i = i + 1
+    return out
+
+struct Span [lo, hi]
+
+fn _span_of[series, of_x]
+    lo = 0.0
+    hi = 0.0
+    seen = false
+    for s in series
+        vs = s.ys
+        if of_x
+            vs = s.xs
+        for v in vs
+            if _finite[v]
+                if not seen
+                    lo = v
+                    hi = v
+                    seen = true
+                if v lt lo
+                    lo = v
+                if v gt hi
+                    hi = v
+    if not seen
+        return Span[0.0, 1.0]
+    if hi eq lo
+        return Span[lo - 0.5, hi + 0.5]
+    return Span[lo, hi]
+
+--- a span widened by a twentieth at each end: a point at the edge of a
+--- scatter is drawn whole
+fn _padded[sp]
+    room = (sp.hi - sp.lo) / 20.0
+    return Span[sp.lo - room, sp.hi + room]
+
+--- the SVG of the series: width and height in pixels, the x axis named
+fn lines_svg[series, x_name, width, height]
+    sorted = for s in series
+        sorted_series[s]
+    left = 56.0
+    right = 12.0
+    top = 12.0
+    bottom = 28.0
+    w = float[width]
+    h = float[height]
+    xs = _span_of[sorted, true]
+    ys = _span_of[sorted, false]
+    plot_w = w - left - right
+    plot_h = h - top - bottom
+    pieces = ['<svg xmlns="http://www.w3.org/2000/svg" width="`width`" height="`height`" viewBox="0 0 `width` `height`" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11">']
+    --- the grid and the ticks: five on each axis
+    for k in range[5]
+        f = float[k] / 4.0
+        gy = top + plot_h - f * plot_h
+        yv = ys.lo + f * (ys.hi - ys.lo)
+        pieces = push[pieces, '<line x1="`_fixed[left]`" y1="`_fixed[gy]`" x2="`_fixed[w - right]`" y2="`_fixed[gy]`" stroke="#8884" stroke-width="1"/>']
+        pieces = push[pieces, '<text x="`_fixed[left - 6.0]`" y="`_fixed[gy + 4.0]`" text-anchor="end" fill="#888">`tick_text[yv]`</text>']
+        gx = left + f * plot_w
+        xv = xs.lo + f * (xs.hi - xs.lo)
+        pieces = push[pieces, '<text x="`_fixed[gx]`" y="`_fixed[h - bottom + 16.0]`" text-anchor="middle" fill="#888">`tick_text[xv]`</text>']
+    pieces = push[pieces, '<text x="`_fixed[w - right]`" y="`_fixed[h - 2.0]`" text-anchor="end" fill="#888">`x_name`</text>']
+    --- each series a path, broken where a value is not finite
+    for si in range[len[sorted]]
+        s = sorted[si]
+        d = ''
+        pen = 'M'
+        last_x = 0.0
+        last_y = 0.0
+        points = 0
+        for i in range[len[s.xs]]
+            x = s.xs[i]
+            y = s.ys[i]
+            if _finite[x] and _finite[y]
+                px = left + (x - xs.lo) / (xs.hi - xs.lo) * plot_w
+                py = top + plot_h - (y - ys.lo) / (ys.hi - ys.lo) * plot_h
+                d = '`d``pen``_fixed[px]`,`_fixed[py]` '
+                pen = 'L'
+                last_x = px
+                last_y = py
+                points = points + 1
+            else
+                pen = 'M'
+        colour = colour_of[si]
+        if d ne ''
+            pieces = push[pieces, '<path d="`trim[d]`" fill="none" stroke="`colour`" stroke-width="2" stroke-linejoin="round"/>']
+        if points eq 1
+            pieces = push[pieces, '<circle cx="`_fixed[last_x]`" cy="`_fixed[last_y]`" r="3" fill="`colour`"/>']
+    pieces = push[pieces, '</svg>']
+    return join[pieces, '']
+
+--- the SVG of points, one per run: x and y two values, each dot named
+fn scatter_svg[names, xs, ys, x_name, y_name, width, height]
+    one = Series['', xs, ys]
+    left = 56.0
+    right = 12.0
+    top = 12.0
+    bottom = 28.0
+    w = float[width]
+    h = float[height]
+    xsp = _padded[_span_of[[one], true]]
+    ysp = _padded[_span_of[[one], false]]
+    plot_w = w - left - right
+    plot_h = h - top - bottom
+    pieces = ['<svg xmlns="http://www.w3.org/2000/svg" width="`width`" height="`height`" viewBox="0 0 `width` `height`" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11">']
+    for k in range[5]
+        f = float[k] / 4.0
+        gy = top + plot_h - f * plot_h
+        pieces = push[pieces, '<line x1="`_fixed[left]`" y1="`_fixed[gy]`" x2="`_fixed[w - right]`" y2="`_fixed[gy]`" stroke="#8884" stroke-width="1"/>']
+        pieces = push[pieces, '<text x="`_fixed[left - 6.0]`" y="`_fixed[gy + 4.0]`" text-anchor="end" fill="#888">`tick_text[ysp.lo + f * (ysp.hi - ysp.lo)]`</text>']
+        pieces = push[pieces, '<text x="`_fixed[left + f * plot_w]`" y="`_fixed[h - bottom + 16.0]`" text-anchor="middle" fill="#888">`tick_text[xsp.lo + f * (xsp.hi - xsp.lo)]`</text>']
+    pieces = push[pieces, '<text x="`_fixed[w - right]`" y="`_fixed[h - 2.0]`" text-anchor="end" fill="#888">`x_name` →</text>']
+    pieces = push[pieces, '<text x="`_fixed[left]`" y="10" fill="#888">↑ `y_name`</text>']
+    for i in range[len[xs]]
+        if _finite[xs[i]] and _finite[ys[i]]
+            px = left + (xs[i] - xsp.lo) / (xsp.hi - xsp.lo) * plot_w
+            py = top + plot_h - (ys[i] - ysp.lo) / (ysp.hi - ysp.lo) * plot_h
+            pieces = push[pieces, '<circle cx="`_fixed[px]`" cy="`_fixed[py]`" r="5" fill="`colour_of[i]`"><title>`names[i]`</title></circle>']
+    pieces = push[pieces, '</svg>']
+    return join[pieces, '']
+
+--- the SVG as an image's address
+fn data_url[svg]
+    coded = encode[svg, 'base64']
+    return 'data:image/svg+xml;base64,`coded`'
+
+--- a chart of lines with its legend: the series' names in their colours
+view lines[title, series, x_name]
+    named = for i in range[len[series]]
+        row[p['●', style = 'color: `colour_of[i]`'], p[series[i].name, size = 'xs'], gap = 'xs', align = 'center']
+    return stack[
+        p[title, weight = 'bold', size = 's'],
+        img[src = data_url[lines_svg[series, x_name, 440, 220]], alt = 'a chart of `title`', class = 'mchart'],
+        row[named, gap = 's', wrap = true],
+        gap = 'xs', pad = 'm', surface = 'card', border = true]
+
+test charts_fit_their_values_and_break_at_nan[]
+    nan = 0.0 / 0.0
+    s = sorted_series[Series['loss', [2.0, 0.0, 1.0], [0.25, 1.0, 0.5]]]
+    assert[s.xs eq [0.0, 1.0, 2.0]]
+    assert[s.ys eq [1.0, 0.5, 0.25]]
+    svg = lines_svg[[Series['loss', [0.0, 1.0, 2.0, 3.0], [1.0, nan, 0.5, 0.25]]], 'step', 400, 200]
+    assert[starts[svg, '<svg']]
+    --- the NaN broke the line: the pen moved again after it
+    assert[len[split[svg, ' M']] eq 2]
+    assert[tick_text[1500.0] eq '1.5k' and tick_text[0.0] eq '0' and tick_text[0.5] eq '0.5']
+    assert[tick_text[0.000123] eq '1.23e-4']
+    one = lines_svg[[Series['r2', [0.0], [0.97]]], 'step', 400, 200]
+    assert['<circle' in one]
+    dots = scatter_svg[['a', 'b'], [1.0, 2.0], [3.0, nan], 'lr', 'rmse', 300, 200]
+    assert[len[split[dots, '<circle']] eq 2]
+    assert[starts[data_url['<svg/>'], 'data:image/svg+xml;base64,']]

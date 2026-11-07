@@ -1,0 +1,573 @@
+--- A run's page and the comparison of runs: MLflow's run view and its
+--- compare view as pages of the workbench. A run's page shows what it
+--- logged — its parameters, the latest value of each metric, its tags,
+--- datasets and logged models — then a chart per metric and its files. The
+--- comparison lays the runs picked side by side, marks the parameters that
+--- differ, draws each metric's lines together and one value against
+--- another as points.
+use web, ui
+use myna.workspace
+use myna.workbench
+use myna.tracking
+use myna.charts
+use myna.experiments
+
+--- the run shown: the page's address names it (`/runs/<id>`)
+run_id = ''
+run_tab = 'overview'
+folder = ''
+opened_file = ''
+axis = 'step'
+editing_note = false
+note_text = ''
+system_shown = false
+asked = 0
+
+--- the runs compared: their ids, by commas (`/compare?runs=a,b`)
+runs = ''
+x_key = ''
+y_key = ''
+
+--- ------------------------------------------------------------ reading
+
+derive shown_run
+    seen = asked
+    return tracking.run[run_id]
+
+derive found
+    return shown_run.id ne ''
+
+derive experiment_name
+    e = tracking.experiment[shown_run.experiment]
+    return e.name
+
+derive params
+    seen = asked
+    return tracking.params_of[run_id]
+
+derive latest
+    seen = asked
+    return tracking.latest_of[run_id]
+
+derive tags
+    seen = asked
+    return tracking.tags_of['run', run_id, '']
+
+--- the tags a person set, and the ones MLflow sets itself (`mlflow.*`)
+derive own_tags
+    out = []
+    for t in tags
+        if not starts[t.key, 'mlflow.']
+            out = push[out, t]
+    return out
+
+derive system_tags
+    out = []
+    for t in tags
+        if starts[t.key, 'mlflow.']
+            out = push[out, t]
+    return out
+
+derive note
+    for t in tags
+        if t.key eq 'mlflow.note.content'
+            return t.value
+    return ''
+
+derive parent
+    for t in tags
+        if t.key eq 'mlflow.parentRunId'
+            return t.value
+    return ''
+
+derive source
+    for t in tags
+        if t.key eq 'mlflow.source.name'
+            return t.value
+    return ''
+
+derive datasets
+    seen = asked
+    return tracking.inputs_of[run_id]
+
+derive models_logged
+    seen = asked
+    out = for id in tracking.outputs_of[run_id]
+        tracking.logged_model[id]
+    return out
+
+derive metric_keys
+    out = []
+    for m in latest
+        if not (m.key in out)
+            out = push[out, m.key]
+    return out
+
+derive run_charts
+    out = for k in metric_keys
+        experiments.ChartOf[k, experiments.series_of[[run_id], k, axis]]
+    return out
+
+derive entries
+    seen = asked
+    return tracking.run_files[run_id, folder]
+
+--- the file opened: its text, at most 64 kB of it ('' where it is none or
+--- is no text)
+derive opened_text
+    if opened_file eq ''
+        return ''
+    t = tracking.file_text[shown_run.artifacts, opened_file]
+    if len[t] gt 65536
+        return '`slice[t, 0, 65536]`\n…'
+    return t
+
+--- ----------------------------------------------------- the comparison
+
+derive compared_ids
+    out = []
+    for id in split[runs, ',']
+        k = trim[id]
+        if k ne '' and not (k in out) and tracking.run[k].id ne ''
+            out = push[out, k]
+    return out
+
+derive compared
+    out = for id in compared_ids
+        tracking.run[id]
+    return out
+
+derive compared_params
+    out = for id in compared_ids
+        tracking.params_of[id]
+    return out
+
+derive compared_latest
+    out = for id in compared_ids
+        tracking.latest_of[id]
+    return out
+
+derive param_names
+    out = []
+    for ps in compared_params
+        for p in ps
+            if not (p.key in out)
+                out = push[out, p.key]
+    return out
+
+derive metric_names
+    out = []
+    for ms in compared_latest
+        for m in ms
+            if not (m.key in out)
+                out = push[out, m.key]
+    return out
+
+--- the values a scatter can put on an axis: each metric, then each param
+derive axis_names
+    out = []
+    for k in metric_names
+        out = push[out, 'metrics.`k`']
+    for k in param_names
+        out = push[out, 'params.`k`']
+    return out
+
+derive x_name
+    if x_key in axis_names
+        return x_key
+    for k in axis_names
+        if starts[k, 'params.']
+            return k
+    if len[axis_names] gt 0
+        return axis_names[0]
+    return ''
+
+derive y_name
+    if y_key in axis_names
+        return y_key
+    if len[metric_names] gt 0
+        return 'metrics.`metric_names[0]`'
+    return ''
+
+derive compare_charts
+    out = for k in metric_names
+        experiments.ChartOf[k, experiments.series_of[compared_ids, k, 'step']]
+    return out
+
+--- a value of a run named as an axis is (`metrics.rmse`, `params.lr`), as
+--- a number: NaN where the run has none or it is no number
+fn value_named[name, ms, ps]
+    nan = 0.0 / 0.0
+    if starts[name, 'metrics.']
+        key = slice[name, 8, len[name]]
+        for m in ms
+            if m.key eq key
+                return m.value
+        return nan
+    key = slice[name, 7, len[name]]
+    for p in ps
+        if p.key eq key
+            v = float[p.value]
+            if not v.ok
+                return nan
+            return v
+    return nan
+
+derive scatter_svg
+    if x_name eq '' or y_name eq ''
+        return ''
+    xs = for i in range[len[compared_ids]]
+        value_named[x_name, compared_latest[i], compared_params[i]]
+    ys = for i in range[len[compared_ids]]
+        value_named[y_name, compared_latest[i], compared_params[i]]
+    names = for r in compared
+        _label_of[r]
+    return charts.scatter_svg[names, xs, ys, x_name, y_name, 520, 300]
+
+fn _label_of[r]
+    if r.name eq ''
+        return r.id
+    return r.name
+
+--- a param's values across the runs, and whether they differ
+fn _values_of[key, every]
+    out = for ps in every
+        experiments._value_in[ps, key]
+    return out
+
+fn _differs[cells_of]
+    for v in cells_of
+        if v ne cells_of[0]
+            return true
+    return false
+
+fn _metric_of[key, ms]
+    for m in ms
+        if m.key eq key
+            return experiments._metric_text[m.value]
+    return ''
+
+--- ------------------------------------------------------------ doing
+
+fn show_run_tab[name]
+    run_tab = name
+
+fn open_folder[path]
+    folder = path
+    opened_file = ''
+
+fn open_file[path]
+    opened_file = path
+
+fn axis_is[name]
+    axis = name
+
+fn edit_note[]
+    note_text = note
+    editing_note = true
+
+fn save_note[]
+    d = tracking.describe_run[run_id, note_text]
+    editing_note = false
+    asked = asked + 1
+    if not d.ok
+        notice['The description was not kept: `d.reason`']
+
+fn cancel_note[]
+    editing_note = false
+
+fn toggle_system[]
+    system_shown = not system_shown
+
+--- ------------------------------------------------------------ drawing
+
+view _fact_cell[label, value]
+    return stack[p[label, size = 'xs', color = 'muted'], p[value, size = 's'], gap = 'none']
+
+view _pair_rows[pairs]
+    if len[pairs] eq 0
+        return p['None', size = 's', color = 'muted']
+    lines = for x in pairs
+        tr[td[p[x.key, size = 'xs', font = 'mono']], td[p[x.value, size = 'xs', font = 'mono']]]
+    return table[thead[tr[th['Name'], th['Value']]], tbody[lines]]
+
+view _metric_rows[ms]
+    if len[ms] eq 0
+        return p['None', size = 's', color = 'muted']
+    lines = for m in ms
+        tr[td[p[m.key, size = 'xs', font = 'mono']], td[p[experiments._metric_text[m.value], size = 'xs', font = 'mono']], td[p[str[m.step], size = 'xs', color = 'muted']]]
+    return table[thead[tr[th['Metric'], th['Latest'], th['Step']]], tbody[lines]]
+
+view _section[heading, body]
+    return stack[p[heading, weight = 'bold', size = 's'], body, gap = 'xs', pad = 's', surface = 'card', border = true]
+
+view _note_box[]
+    if editing_note
+        return stack[
+            stack[field['Description', note_text, lines = 4], class = 'wide'],
+            row[button['Save', click = save_note, class = 'primary'], button['Cancel', click = cancel_note], gap = 's'],
+            gap = 'xs']
+    if note eq ''
+        return row[p['No description', size = 's', color = 'muted'], button['Add', click = edit_note], gap = 's', align = 'center']
+    return stack[pre[note], row[button['Edit', click = edit_note], gap = 's'], gap = 'xs']
+
+view _dataset_line[d]
+    return row[p[d.name, size = 's', weight = 'bold'], p[d.digest, size = 'xs', font = 'mono', color = 'muted'], p[d.source_type, size = 'xs', color = 'muted'], p[d.context, size = 'xs'], gap = 's', align = 'center', wrap = true]
+
+view _model_line[m]
+    return row[p[m.name, size = 's', weight = 'bold'], p[m.id, size = 'xs', font = 'mono', color = 'muted'], experiments._status[m.status], gap = 's', align = 'center', wrap = true]
+
+view _system_box[]
+    if system_shown
+        return stack[button['Hide MLflow\'s tags', click = toggle_system], _pair_rows[system_tags], gap = 'xs']
+    return button['Show MLflow\'s tags (`len[system_tags]`)', click = toggle_system]
+
+view _overview[]
+    dataset_lines = for d in datasets
+        _dataset_line[d]
+    model_lines = for m in models_logged
+        _model_line[m]
+    shown_sets = p['None', size = 's', color = 'muted']
+    if len[datasets] gt 0
+        shown_sets = stack[dataset_lines, gap = 'xs']
+    shown_models = p['None', size = 's', color = 'muted']
+    if len[models_logged] gt 0
+        shown_models = stack[model_lines, gap = 'xs']
+    return stack[
+        _section['Description', _note_box[]],
+        grid[_section['Parameters', _pair_rows[params]], _section['Metrics', _metric_rows[latest]], columns = 2, gap = 'm'],
+        _section['Tags', stack[_pair_rows[own_tags], _system_box[], gap = 's']],
+        grid[_section['Datasets', shown_sets], _section['Logged models', shown_models], columns = 2, gap = 'm'],
+        gap = 'm']
+
+view _axis_choice[name, label]
+    if axis eq name
+        return button[label, click = axis_is[name], class = 'primary']
+    return button[label, click = axis_is[name]]
+
+view _metrics_tab[]
+    if len[metric_keys] eq 0
+        return p['This run logged no metrics.', color = 'muted', size = 's']
+    cards = for c in run_charts
+        charts.lines[c.key, c.series, axis]
+    return stack[
+        row[p['x axis', size = 's', color = 'muted'], _axis_choice['step', 'Step'], _axis_choice['time', 'Time (s)'], _axis_choice['elapsed', 'Elapsed (s)'], gap = 's', align = 'center', wrap = true],
+        grid[cards, columns = 2, gap = 'm'],
+        gap = 's']
+
+fn _size_words[n]
+    if n lt 1024
+        return '`n` B'
+    if n lt 1048576
+        return '`float[round[float[n] / 102.4]] / 10.0` kB'
+    return '`float[round[float[n] / 104857.6]] / 10.0` MB'
+
+fn _last_piece[path]
+    pieces = split[path, '/']
+    return pieces[len[pieces] - 1]
+
+fn _up_of[path]
+    pieces = split[path, '/']
+    if len[pieces] lt 2
+        return ''
+    return join[slice[pieces, 0, len[pieces] - 1], '/']
+
+view _entry_line[e, chosen]
+    if e.is_dir
+        return button['▸ `_last_piece[e.path]`/', click = open_folder[e.path], class = 'fileline']
+    mark = 'fileline'
+    if e.path eq chosen
+        mark = 'fileline on'
+    return button['`_last_piece[e.path]`  ·  `_size_words[e.size]`', click = open_file[e.path], class = mark]
+
+view _preview[]
+    if opened_file eq ''
+        return p['Pick a file to read it.', color = 'muted', size = 's']
+    if opened_text eq ''
+        return stack[p[opened_file, size = 's', weight = 'bold'], p['Not shown: the file is empty or is not text.', color = 'muted', size = 's'], gap = 'xs']
+    return stack[p[opened_file, size = 's', weight = 'bold'], pre[opened_text], gap = 'xs', class = 'spanbox']
+
+view _artifacts_tab[]
+    lines = for e in entries
+        _entry_line[e, opened_file]
+    up = p['']
+    if folder ne ''
+        up = button['▴ up', click = open_folder[_up_of[folder]], class = 'fileline']
+    listing = stack[p['`folder`/', size = 'xs', font = 'mono', color = 'muted'], up, lines, gap = 'xs']
+    if len[entries] eq 0
+        listing = stack[p['`folder`/', size = 'xs', font = 'mono', color = 'muted'], up, p['No files here.', color = 'muted', size = 's'], gap = 'xs']
+    return row[
+        stack[listing, gap = 'xs', pad = 's', width = '280px', surface = 'card', border = true],
+        stack[_preview[], gap = 'xs', pad = 's', fill = 'true', surface = 'card', border = true],
+        gap = 'm', align = 'start', below = 'tablet', becomes = 'stack']
+
+view _run_tab_link[name, label]
+    if run_tab eq name
+        return button[label, click = show_run_tab[name], class = 'boardtab on']
+    return button[label, click = show_run_tab[name], class = 'boardtab']
+
+view _run_tab_body[]
+    if run_tab eq 'metrics'
+        return _metrics_tab[]
+    if run_tab eq 'artifacts'
+        return _artifacts_tab[]
+    return _overview[]
+
+view _parent_cell[]
+    if parent eq ''
+        return _fact_cell['Parent run', '—']
+    return stack[p['Parent run', size = 'xs', color = 'muted'], a[parent, href = '/runs/`parent`'], gap = 'none']
+
+view _run_body[]
+    if not found
+        return stack[h1['No such run'], p['No run has the id `run_id`.', color = 'muted'], a['Experiments', href = '/experiments'], gap = 's']
+    r = shown_run
+    name = _label_of[r]
+    return stack[
+        row[
+            stack[h1[name], p['`experiment_name` · run `r.id`', size = 'xs', color = 'muted'], gap = 'xs'],
+            row[a['Compare with…', href = '/experiments?current=`r.experiment`'], gap = 's'],
+            justify = 'between', align = 'start', wrap = true],
+        grid[
+            stack[p['Status', size = 'xs', color = 'muted'], experiments._status[r.status], gap = 'none'],
+            _fact_cell['Started', experiments.when_ms[r.start]],
+            _fact_cell['Duration', experiments.took_words[r.start, r.finish]],
+            _fact_cell['User', r.user],
+            _fact_cell['Source', source],
+            _parent_cell[],
+            _fact_cell['Lifecycle', r.stage],
+            stack[p['Files', size = 'xs', color = 'muted'], p[r.artifacts, size = 'xs', font = 'mono'], gap = 'none'],
+            columns = 4, gap = 's', pad = 's', surface = 'card', border = true, class = 'runfacts'],
+        row[_run_tab_link['overview', 'Overview'], _run_tab_link['metrics', 'Metrics'], _run_tab_link['artifacts', 'Artifacts'], gap = 'none', wrap = true, class = 'boardtabs'],
+        _run_tab_body[],
+        gap = 'm']
+
+fn _where_of[found_run, experiment, r]
+    if not found_run
+        return 'Experiments / run'
+    return 'Experiments / `experiment` / `_label_of[r]`'
+
+view render[]
+    back = a['All runs', href = '/experiments?current=`shown_run.experiment`', class = 'button']
+    return workbench.screen['Experiments', _where_of[found, experiment_name, shown_run], back, _run_body[]]
+
+--- ----------------------------------------------------- the comparison
+
+view _compare_head[r]
+    return th[a[_label_of[r], href = '/runs/`r.id`']]
+
+view _compare_row[label, cells_of, marked]
+    cells = for v in cells_of
+        td[p[v, size = 'xs', font = 'mono']]
+    shown = p[label, size = 'xs', font = 'mono']
+    if marked
+        shown = p['● `label`', size = 'xs', font = 'mono', color = 'accent']
+    return tr[td[shown], cells]
+
+view _param_row[key]
+    cells_of = _values_of[key, compared_params]
+    return _compare_row[key, cells_of, _differs[cells_of]]
+
+view _metric_row[key]
+    cells_of = for ms in compared_latest
+        _metric_of[key, ms]
+    return _compare_row[key, cells_of, false]
+
+view _compare_body[]
+    if len[compared_ids] lt 2
+        return stack[h1['Pick two runs or more'], p['Open an experiment, pick runs with ☐ and press Compare.', color = 'muted'], a['Experiments', href = '/experiments'], gap = 's']
+    heads = for r in compared
+        _compare_head[r]
+    statuses = for r in compared
+        r.status
+    starts_at = for r in compared
+        experiments.when_ms[r.start]
+    durations = for r in compared
+        experiments.took_words[r.start, r.finish]
+    param_lines = for k in param_names
+        _param_row[k]
+    metric_lines = for k in metric_names
+        _metric_row[k]
+    cards = for c in compare_charts
+        charts.lines[c.key, c.series, 'step']
+    scatter = p['No values to plot.', color = 'muted', size = 's']
+    if scatter_svg ne ''
+        scatter = img[src = charts.data_url[scatter_svg], alt = 'each run as a point', class = 'mchart scatter']
+    return stack[
+        h1['`len[compared_ids]` runs compared'],
+        p['● marks a parameter whose value differs between the runs', size = 'xs', color = 'muted'],
+        table[
+            thead[tr[th['Run'], heads]],
+            tbody[
+                _compare_row['status', statuses, false],
+                _compare_row['started', starts_at, false],
+                _compare_row['duration', durations, false],
+                tr[td[p['Parameters', weight = 'bold', size = 'xs']]],
+                param_lines,
+                tr[td[p['Metrics', weight = 'bold', size = 'xs']]],
+                metric_lines]],
+        stack[
+            p['One value against another', weight = 'bold', size = 's'],
+            row[
+                stack[p['x', size = 'xs', color = 'muted'], select[axis_names, x_key], gap = 'none'],
+                stack[p['y', size = 'xs', color = 'muted'], select[axis_names, y_key], gap = 'none'],
+                gap = 's', wrap = true],
+            scatter,
+            gap = 's', pad = 'm', surface = 'card', border = true],
+        grid[cards, columns = 2, gap = 'm'],
+        gap = 'm']
+
+view compare[]
+    return workbench.screen['Experiments', 'Experiments / compare', a['Experiments', href = '/experiments', class = 'button'], _compare_body[]]
+
+--- a run's page reads what the run logged; the comparison marks the
+--- parameter that differs and plots one value against another
+test a_run_and_a_comparison_show_what_was_logged[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    tracking.ready[]
+    one = tracking.start_run['prices', 'small']
+    p1 = tracking.log_params[one, map[lr = '0.1', depth = '4']]
+    for step in range[3]
+        m = tracking.log_metric[one, 'loss', 1.0 / float[step + 1], step]
+    t1 = tracking.tag_run[one, 'team', 'pricing']
+    f1 = tracking.log_text[one, 'hello', 'notes/readme.txt']
+    e1 = tracking.end_run[one, 'FINISHED']
+    two = tracking.start_run['prices', 'large']
+    p2 = tracking.log_params[two, map[lr = '0.01', depth = '4']]
+    m2 = tracking.log_metric[two, 'loss', 0.5, 0]
+    e2 = tracking.end_run[two, 'FINISHED']
+    a = app[render, wide = true]
+    change[a, 'run_id', one]
+    drawn = html[a]
+    assert['small' in drawn and 'prices' in drawn]
+    assert['FINISHED' in drawn and 'pricing' in drawn]
+    assert[len[a.params] eq 2]
+    assert[a.own_tags[0].key eq 'team']
+    click[a, edit_note]
+    change[a, 'note_text', 'the first try']
+    click[a, save_note]
+    assert[a.note eq 'the first try']
+    click[a, show_run_tab['metrics']]
+    assert['data:image/svg+xml;base64,' in html[a]]
+    click[a, show_run_tab['artifacts']]
+    assert[len[a.entries] eq 1]
+    assert[a.entries[0].is_dir]
+    click[a, open_folder['notes']]
+    click[a, open_file['notes/readme.txt']]
+    assert[a.opened_text eq 'hello']
+    change[a, 'run_id', 'nosuch']
+    assert['No such run' in html[a]]
+    c = app[compare, wide = true]
+    change[c, 'runs', '`one`,`two`,nosuch']
+    assert[len[c.compared_ids] eq 2]
+    assert[c.param_names eq ['depth', 'lr']]
+    assert['● lr' in html[c]]
+    assert[not ('● depth' in html[c])]
+    assert[c.x_name eq 'params.depth' and c.y_name eq 'metrics.loss']
+    change[c, 'x_key', 'params.lr']
+    assert[c.x_name eq 'params.lr']
+    assert[starts[c.scatter_svg, '<svg']]
+    assert['<circle' in c.scatter_svg]
+    gone = rm[workspace.home[]]

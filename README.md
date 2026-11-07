@@ -3,11 +3,11 @@
 # Myna
 
 A workbench over [Magpie](https://github.com/agncrow/magpie), written in
-Crow: the catalog, queries, notebooks, dashboards, models, a model to ask
-and the jobs that run it all, every piece of its state a Magpie log. The
-notebooks, the queries, the catalog, the dashboards, the jobs and the
-settings are built. The models and the model to ask are not yet, and
-their pages say so.
+Crow: the catalog, queries, notebooks, dashboards, experiments and
+models, a model to ask and the jobs that run it all, every piece of its
+state a Magpie log. Everything but the model to ask is built, and its
+page says so. Experiments and Models do what MLflow does, and answer
+MLflow's own client: docs/experiments.md.
 
 Myna needs Crow 0.8.0 or later and installs Magpie as any dependency.
 From this folder:
@@ -50,6 +50,16 @@ starts at once.
   an interval (1 min, 15 min, 1 h, 1 d) is refreshed by the scheduler.
   Each tile's answer is kept as a Parquet file under `.tiles/`, so a
   dashboard opens without asking its queries.
+- **Experiments** (`/experiments`): MLflow's tracking. Each experiment's
+  runs are shown with their params and metrics, searched in MLflow's
+  grammar, sorted, compared and charted. Logged models and traces have
+  tabs of their own. A run's page (`/runs/:id`) shows its overview, its
+  metric curves and its files, and Compare (`/compare`) sets runs side
+  by side.
+- **Models** (`/models`): the registry. A model's versions have
+  aliases, stages and tags, and a version can be tried on the page and
+  served at `/serve/:model/:ref/invocations`. Prompts have their own
+  tab. All of it is in docs/experiments.md.
 - **Jobs** (`/jobs`): the scheduler, the schedules and every run.
 - **Settings** (`/settings`): the workspace's name, and how long a run may
   take before it is stopped (60 seconds unless set).
@@ -80,9 +90,13 @@ this checkout, where the programs a notebook runs find `crow_modules/`.
 ./test.sh
 ```
 
-runs every part's blocks, interpreted and then compiled. The tests make
-and remove a workspace of their own, `test_data/`, and refuse to run in
-`myna_data/`. `./test.sh path/to/crow` tests another crow.
+runs every part's blocks, interpreted and then compiled. It then holds a
+model trained, served and evaluated in Myna to the same model trained in
+Python (`tests/mlflow/house_prices.py`, which needs scikit-learn). The
+tests make and remove a workspace of their own, `test_data/`, and refuse
+to run in `myna_data/`. `./test.sh path/to/crow` tests another crow.
+`tests/mlflow/client_check.py` drives MLflow's own Python client against
+a running Myna.
 
 ## The code
 
@@ -96,6 +110,13 @@ and remove a workspace of their own, `test_data/`, and refuse to run in
   it in a line; the dashboards read saved queries through it, as Ask
   is to.
 - `myna/tiles.co` refreshes a dashboard's tiles and says when one is due.
+- `myna/tracking.co`, `myna/registry.co`, `myna/search.co`,
+  `myna/traces.co` and `myna/serving.co` are the experiments and
+  models: the store, the registry, MLflow's search grammar, traces, and
+  serving and evaluation. `myna/mlapi.co` answers MLflow's HTTP API over
+  them, and `myna/charts.co` draws their charts.
+- `myna/experiments.co`, `myna/runs.co` and `myna/models.co` are their
+  pages.
 - `myna/query.co`, `myna/notebooks.co`, `myna/catalog.co`,
   `myna/dashboards.co`, `myna/jobs.co` and
   `myna/settings.co` are the pages; `myna/soon.co` holds the pages not

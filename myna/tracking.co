@@ -1,0 +1,1287 @@
+--- MLflow's tracking, written in Crow over Magpie: experiments, runs,
+--- their parameters, metrics (every value at every step) and tags, the
+--- datasets a run read, the models it logged, and the files it kept. Each
+--- is a Magpie log in the workspace's folder (myna/workspace.co):
+---
+---   _ml_experiments  a row per experiment, keyed by its id
+---   _ml_runs         a row per run, keyed by its id
+---   _ml_params       a row per run and key
+---   _ml_metrics      every value logged, appended: run, key, value, step,
+---                    when, and the logged model it measures ('' none)
+---   _ml_latest       a run's latest value of each metric, keyed by run
+---                    and key: the greatest step, then time, then value
+---   _ml_tags         a row per entity, id, version and key (a run's, an
+---                    experiment's, a registered model's, a version's, a
+---                    logged model's, a trace's), live false once deleted
+---   _ml_inputs       a run's datasets, keyed by run, name, digest and
+---                    context
+---   _ml_outputs      the logged models a run made, keyed by run and model
+---   _ml_logged       the logged models (MLflow 3), keyed by their id
+---
+--- A run's files live under the experiment's artifact location, which is
+--- `<workspace>/.mlartifacts/<experiment>` written as an absolute path, so
+--- MLflow's own Python client, told it, writes there directly. Every
+--- function is handed what it reads and answers values: the pages, the
+--- REST API (myna/mlapi.co) and a notebook's cells call them alike.
+use frame, magpie
+use sys as sx
+use myna.workspace
+
+struct Experiment [id, name, location, stage, created, updated]
+struct Run [id, experiment, name, status, start, finish, stage, user, artifacts]
+struct Pair [key, value]
+struct Metric [key, value, step, at]
+struct Dataset [name, digest, source_type, source, schema, profile, context]
+struct LoggedModel [id, experiment, name, run, status, model_type, created, updated, location]
+struct Entry [path, is_dir, size]
+
+--- a log's folder in the workspace
+fn _log[name]
+    return workspace.at[name]
+
+--- whether a log holds nothing yet, or is not there
+fn _none_in[dir]
+    h = magpie.head[dir]
+    if not h.ok
+        return true
+    return h lt 0
+
+--- the time now, in milliseconds since 1970, as MLflow writes times
+fn clock[]
+    return workspace.small[int[float[now[]] * 1000.0]]
+
+--- a new id: 32 hex digits from the system's randomness, as MLflow's run
+--- ids are
+fn new_id[]
+    return sx.hex[sx.random[16]]
+
+--- text as a JSON string, quoted and escaped
+fn quoted[s]
+    e = encode['`s`']
+    if not e.ok
+        return '""'
+    return e
+
+--- the cells of a log's column as text, and as numbers
+fn texts_in[col]
+    found = for c in col
+        workspace.text_of[c]
+    return found
+
+fn ints_in[col]
+    found = for c in col
+        workspace.small[c]
+    return found
+
+fn _float_of[c]
+    n = float[c]
+    if not n.ok
+        return 0.0
+    return n
+
+fn floats_in[col]
+    found = for c in col
+        _float_of[c]
+    return found
+
+fn _truth_of[c]
+    s = str[c]
+    if not s.ok
+        return false
+    return s eq 'true'
+
+fn truths_in[col]
+    found = for c in col
+        _truth_of[c]
+    return found
+
+--- the workspace's folder as an absolute path: MLflow's client is told
+--- where to write a run's files, and it runs in a folder of its own
+fn root[]
+    h = workspace.home[]
+    if starts[h, '/']
+        return h
+    here = shell['pwd']
+    if not here.ok
+        return h
+    d = trim[here.stdout]
+    if h eq '.'
+        return d
+    if starts[h, './']
+        return '`d`/`slice[h, 2, len[h]]`'
+    return '`d`/`h`'
+
+--- MLflow's lifecycle words for a stage, and the view a search asks for
+fn _in_view[stage, shown]
+    if shown eq 'all' or shown eq 'ALL'
+        return true
+    if shown eq 'deleted' or shown eq 'DELETED_ONLY'
+        return stage eq 'deleted'
+    return stage ne 'deleted'
+
+--- MLflow's limits, checked in this one place: a key 250 characters, a
+--- parameter's value 6000, a tag's 8000
+fn _limited[what, key, value, most]
+    if len[key] gt 250
+        return error['a `what`\'s key is at most 250 characters, not `len[key]`', 'invalid']
+    if len[value] gt most
+        return error['a `what`\'s value is at most `most` characters, not `len[value]`', 'invalid']
+    return key
+
+--- ---------------------------------------------------------------- tags
+
+--- tags written: one batch, each key's value and whether it is live; a
+--- version's tags name the version in `sub`, every other entity ''
+fn put_tags[entity, id, vid, tag_keys, tag_values, live]
+    n = len[tag_keys]
+    if n eq 0
+        return 0
+    for i in range[n]
+        if trim[tag_keys[i]] eq ''
+            return error['a tag needs a key', 'invalid']
+        ok = _limited['tag', tag_keys[i], tag_values[i], 8000]
+        if not ok.ok
+            return ok
+    entities = for k in tag_keys
+        entity
+    ids = for k in tag_keys
+        id
+    subs = for k in tag_keys
+        vid
+    lives = for k in tag_keys
+        live
+    w = magpie.batch[_log['_ml_tags'], frame.new[entity = entities, id = ids, sub = subs, key = tag_keys, value = tag_values, live = lives], by = ['entity', 'id', 'sub', 'key']]
+    if not w.ok
+        return w
+    return n
+
+fn set_tag[entity, id, vid, key, value]
+    return put_tags[entity, id, vid, [key], [value], true]
+
+fn delete_tag[entity, id, vid, key]
+    return put_tags[entity, id, vid, [key], [''], false]
+
+--- every live tag of an entity: a frame of id, sub, key and value
+fn tags_frame[entity]
+    empty = frame.new[id = [''], sub = [''], key = [''], value = ['']]
+    none = empty[empty.id eq 'none']
+    v = _tags_frame[entity]
+    if not v.ok
+        return none
+    return v
+
+fn _tags_frame[entity]
+    empty = frame.new[id = [''], sub = [''], key = [''], value = ['']]
+    none = empty[empty.id eq 'none']
+    if _none_in[_log['_ml_tags']]
+        return none
+    f = magpie.latest[_log['_ml_tags']]
+    if not f.ok
+        return none
+    mine = f[f.entity eq entity]
+    if not mine.ok
+        return none
+    alive = mine[mine.live eq true]
+    if not alive.ok
+        return none
+    return frame.new[id = texts_in[alive.id], sub = texts_in[alive.sub], key = texts_in[alive.key], value = texts_in[alive.value]]
+
+--- the live tags of one entity, by key
+fn tags_of[entity, id, vid]
+    found = []
+    f = tags_frame[entity]
+    mine = f[f.id eq id]
+    if not mine.ok
+        return found
+    one = mine[mine.sub eq vid]
+    if not one.ok
+        return found
+    ks = texts_in[one.key]
+    vs = texts_in[one.value]
+    for i in range[len[ks]]
+        found = push[found, Pair[ks[i], vs[i]]]
+    return found
+
+--- one tag's value, '' where it is not set
+fn tag_value[entity, id, vid, key]
+    found = ''
+    for t in tags_of[entity, id, vid]
+        if t.key eq key
+            found = t.value
+    return found
+
+--- ------------------------------------------------------------ experiments
+
+fn _no_experiment[]
+    return Experiment['', '', '', '', 0, 0]
+
+fn _put_experiment[e]
+    return magpie.batch[_log['_ml_experiments'], frame.new[id = [e.id], name = [e.name], location = [e.location], stage = [e.stage], created = [e.created], updated = [e.updated]], by = ['id']]
+
+--- every experiment, the newest first (by id, which counts up)
+fn all_experiments[]
+    found = []
+    v = _all_experiments[]
+    if not v.ok
+        return found
+    return v
+
+fn _all_experiments[]
+    found = []
+    if _none_in[_log['_ml_experiments']]
+        return found
+    f = magpie.latest[_log['_ml_experiments']]
+    if not f.ok
+        return found
+    ids = texts_in[f.id]
+    names = texts_in[f.name]
+    places = texts_in[f.location]
+    stages = texts_in[f.stage]
+    made = ints_in[f.created]
+    moved = ints_in[f.updated]
+    order = for i in range[len[ids]]
+        _id_number[ids[i]]
+    shown = frame.new[i = range[len[ids]], n = order]
+    shown = sort[shown, 'n', desc = true]
+    for c in shown.i
+        i = workspace.small[c]
+        found = push[found, Experiment[ids[i], names[i], places[i], stages[i], made[i], moved[i]]]
+    return found
+
+fn _id_number[id]
+    n = int[id]
+    if not n.ok
+        return 0
+    return workspace.small[n]
+
+--- the experiments a view shows: 'active' (MLflow's ACTIVE_ONLY), 'deleted'
+--- or 'all'
+fn experiments_in[shown]
+    found = []
+    for e in all_experiments[]
+        if _in_view[e.stage, shown]
+            found = push[found, e]
+    return found
+
+fn experiment[id]
+    found = _no_experiment[]
+    for e in all_experiments[]
+        if e.id eq id
+            found = e
+    return found
+
+fn experiment_named[name]
+    found = _no_experiment[]
+    for e in all_experiments[]
+        if e.name eq name
+            found = e
+    return found
+
+fn _next_experiment_id[]
+    top = 0
+    for e in all_experiments[]
+        n = _id_number[e.id]
+        if n gt top
+            top = n
+    return '`top + 1`'
+
+--- the experiment every run without one goes to, made once
+fn ready[]
+    workspace.ready[]
+    if experiment['0'].id eq ''
+        at = clock[]
+        w = _put_experiment[Experiment['0', 'Default', '`root[]`/.mlartifacts/0', 'active', at, at]]
+
+--- an experiment made: its id, or why not (a name another holds, deleted
+--- or not, as MLflow refuses it)
+fn create_experiment[name, location]
+    clean = trim[name]
+    if clean eq ''
+        return error['an experiment needs a name', 'invalid']
+    if experiment_named[clean].id ne ''
+        return error['an experiment named \'`clean`\' exists', 'exists']
+    id = _next_experiment_id[]
+    place = trim[location]
+    if place eq ''
+        place = '`root[]`/.mlartifacts/`id`'
+    at = clock[]
+    w = _put_experiment[Experiment[id, clean, place, 'active', at, at]]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return id
+
+fn _changed_experiment[id, name, stage]
+    e = experiment[id]
+    if e.id eq ''
+        return error['no experiment with id \'`id`\'', 'missing']
+    if name ne '' and name ne e.name
+        if experiment_named[name].id ne ''
+            return error['an experiment named \'`name`\' exists', 'exists']
+        e.name = name
+    if stage ne ''
+        e.stage = stage
+    e.updated = clock[]
+    w = _put_experiment[e]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return e.id
+
+--- an experiment's last change moved to now: what a run, a trace or a
+--- model logged into it counts as a change
+fn touch_experiment[id]
+    return _changed_experiment[id, '', '']
+
+fn rename_experiment[id, name]
+    clean = trim[name]
+    if clean eq ''
+        return error['an experiment needs a name', 'invalid']
+    return _changed_experiment[id, clean, '']
+
+--- an experiment deleted, and its runs with it, as MLflow marks them; the
+--- Default experiment stays
+fn delete_experiment[id]
+    if id eq '0'
+        return error['the Default experiment cannot be deleted', 'invalid']
+    w = _changed_experiment[id, '', 'deleted']
+    if not w.ok
+        return w
+    for r in runs_in[[id], 'active']
+        d = _set_run_stage[r.id, 'deleted']
+    return id
+
+fn restore_experiment[id]
+    w = _changed_experiment[id, '', 'active']
+    if not w.ok
+        return w
+    for r in runs_in[[id], 'deleted']
+        d = _set_run_stage[r.id, 'active']
+    return id
+
+--- ------------------------------------------------------------------- runs
+
+fn _no_run[]
+    return Run['', '', '', '', 0, 0, '', '', '']
+
+fn _put_run[r]
+    return magpie.batch[_log['_ml_runs'], frame.new[id = [r.id], experiment = [r.experiment], name = [r.name], status = [r.status], start = [r.start], finish = [r.finish], stage = [r.stage], user = [r.user], artifacts = [r.artifacts]], by = ['id']]
+
+--- every run as the log holds it, the newest first
+fn _all_runs[]
+    found = []
+    if _none_in[_log['_ml_runs']]
+        return found
+    f = magpie.latest[_log['_ml_runs']]
+    if not f.ok
+        return found
+    f = sort[f, 'start', desc = true]
+    ids = texts_in[f.id]
+    exps = texts_in[f.experiment]
+    names = texts_in[f.name]
+    states = texts_in[f.status]
+    starts_at = ints_in[f.start]
+    ends_at = ints_in[f.finish]
+    stages = texts_in[f.stage]
+    users = texts_in[f.user]
+    places = texts_in[f.artifacts]
+    for i in range[len[ids]]
+        found = push[found, Run[ids[i], exps[i], names[i], states[i], starts_at[i], ends_at[i], stages[i], users[i], places[i]]]
+    return found
+
+fn all_runs[]
+    found = []
+    v = _all_runs[]
+    if not v.ok
+        return found
+    return v
+
+--- the runs of the experiments named, in a view ('active', 'deleted',
+--- 'all'), the newest first
+fn runs_in[experiment_ids, shown]
+    found = []
+    for r in all_runs[]
+        if r.experiment in experiment_ids and _in_view[r.stage, shown]
+            found = push[found, r]
+    return found
+
+fn run[id]
+    found = _no_run[]
+    if id eq ''
+        return found
+    if _none_in[_log['_ml_runs']]
+        return found
+    f = magpie.latest[_log['_ml_runs']]
+    if not f.ok
+        return found
+    one = f[f.id eq id]
+    if not one.ok
+        return found
+    if len[one] eq 0
+        return found
+    exps = texts_in[one.experiment]
+    names = texts_in[one.name]
+    states = texts_in[one.status]
+    starts_at = ints_in[one.start]
+    ends_at = ints_in[one.finish]
+    stages = texts_in[one.stage]
+    users = texts_in[one.user]
+    places = texts_in[one.artifacts]
+    return Run[id, exps[0], names[0], states[0], starts_at[0], ends_at[0], stages[0], users[0], places[0]]
+
+--- a run's name when none is given, as MLflow names one: two words and
+--- a number
+fn run_name_made[]
+    moods = ['bold', 'calm', 'clever', 'bright', 'gentle', 'swift', 'quiet', 'merry', 'brave', 'keen', 'wise', 'lucky', 'eager', 'sunny', 'wild', 'noble']
+    birds = ['myna', 'crow', 'heron', 'finch', 'robin', 'wren', 'kite', 'owl', 'swan', 'lark', 'stork', 'crane', 'egret', 'ibis', 'jay', 'tern']
+    return '`moods[rand[16]]`-`birds[rand[16]]`-`rand[1000]`'
+
+--- a run started in an experiment: its record, or why not
+fn create_run[experiment_id, name, user, started]
+    e = experiment[experiment_id]
+    if e.id eq ''
+        return error['no experiment with id \'`experiment_id`\'', 'missing']
+    if e.stage eq 'deleted'
+        return error['the experiment \'`e.name`\' is deleted', 'invalid']
+    id = new_id[]
+    called = trim[name]
+    if called eq ''
+        called = run_name_made[]
+    began = started
+    if began eq 0
+        began = clock[]
+    r = Run[id, experiment_id, called, 'RUNNING', began, 0, 'active', user, '`e.location`/`id`/artifacts']
+    w = _put_run[r]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    keys_set = ['mlflow.runName']
+    vals_set = [called]
+    if user ne ''
+        keys_set = push[keys_set, 'mlflow.user']
+        vals_set = push[vals_set, user]
+    t = put_tags['run', id, '', keys_set, vals_set, true]
+    return r
+
+--- a run changed: its status (RUNNING, SCHEDULED, FINISHED, FAILED,
+--- KILLED), when it ended (0, unchanged) and its name ('' unchanged)
+fn update_run[id, status, finish, name]
+    r = run[id]
+    if r.id eq ''
+        return error['no run with id \'`id`\'', 'missing']
+    if status ne ''
+        if status not in ['RUNNING', 'SCHEDULED', 'FINISHED', 'FAILED', 'KILLED']
+            return error['a run\'s status is RUNNING, SCHEDULED, FINISHED, FAILED or KILLED, not \'`status`\'', 'invalid']
+        r.status = status
+    if finish gt 0
+        r.finish = finish
+    if trim[name] ne ''
+        r.name = trim[name]
+        t = set_tag['run', id, '', 'mlflow.runName', r.name]
+    w = _put_run[r]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return r
+
+fn _set_run_stage[id, stage]
+    r = run[id]
+    if r.id eq ''
+        return error['no run with id \'`id`\'', 'missing']
+    r.stage = stage
+    w = _put_run[r]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return r
+
+fn delete_run[id]
+    return _set_run_stage[id, 'deleted']
+
+fn restore_run[id]
+    return _set_run_stage[id, 'active']
+
+--- a run's end: finished now, or with the status given
+fn end_run[id, status]
+    said = status
+    if said eq ''
+        said = 'FINISHED'
+    return update_run[id, said, clock[], '']
+
+--- a run that takes what it is logged: live (not deleted)
+fn _writable[id]
+    r = run[id]
+    if r.id eq ''
+        if starts[id, 'm-']
+            m = logged_model[id]
+            if m.id eq ''
+                return error['no run or logged model with id \'`id`\'', 'missing']
+            return id
+        return error['no run with id \'`id`\'', 'missing']
+    if r.stage eq 'deleted'
+        return error['the run \'`id`\' is deleted', 'invalid']
+    return id
+
+--- ----------------------------------------------------------------- params
+
+--- a run's parameters, by key (a logged model's too, by its id)
+fn params_of[id]
+    found = []
+    f = params_frame[]
+    mine = f[f.run eq id]
+    if not mine.ok
+        return found
+    ks = texts_in[mine.key]
+    vs = texts_in[mine.value]
+    for i in range[len[ks]]
+        found = push[found, Pair[ks[i], vs[i]]]
+    return found
+
+--- every parameter of every run: run, key, value
+fn params_frame[]
+    empty = frame.new[run = [''], key = [''], value = ['']]
+    none = empty[empty.run eq 'none']
+    v = _params_frame[]
+    if not v.ok
+        return none
+    return v
+
+fn _params_frame[]
+    empty = frame.new[run = [''], key = [''], value = ['']]
+    none = empty[empty.run eq 'none']
+    if _none_in[_log['_ml_params']]
+        return none
+    f = magpie.latest[_log['_ml_params']]
+    if not f.ok
+        return none
+    return frame.new[run = texts_in[f.run], key = texts_in[f.key], value = texts_in[f.value]]
+
+--- parameters logged: a key logged before keeps its value, as MLflow
+--- refuses a parameter changed
+fn log_params_of[id, param_keys, param_values]
+    ok = _writable[id]
+    if not ok.ok
+        return ok
+    held = params_of[id]
+    for i in range[len[param_keys]]
+        if trim[param_keys[i]] eq ''
+            return error['a parameter needs a key', 'invalid']
+        ok_size = _limited['parameter', param_keys[i], param_values[i], 6000]
+        if not ok_size.ok
+            return ok_size
+        for p in held
+            if p.key eq param_keys[i] and p.value ne param_values[i]
+                return error['the parameter \'`p.key`\' of run \'`id`\' was logged as \'`p.value`\' and cannot be changed to \'`param_values[i]`\'', 'invalid']
+    if len[param_keys] eq 0
+        return 0
+    runs_col = for k in param_keys
+        id
+    w = magpie.batch[_log['_ml_params'], frame.new[run = runs_col, key = param_keys, value = param_values], by = ['run', 'key']]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return len[param_keys]
+
+fn log_param[id, key, value]
+    return log_params_of[id, [key], ['`value`']]
+
+--- ---------------------------------------------------------------- metrics
+
+--- the latest value of each metric of every run: run, key, value, step,
+--- at
+fn latest_frame[]
+    empty = frame.new[run = [''], key = [''], value = [0.0], step = [0], at = [0]]
+    none = empty[empty.run eq 'none']
+    v = _latest_frame[]
+    if not v.ok
+        return none
+    return v
+
+fn _latest_frame[]
+    empty = frame.new[run = [''], key = [''], value = [0.0], step = [0], at = [0]]
+    none = empty[empty.run eq 'none']
+    if _none_in[_log['_ml_latest']]
+        return none
+    f = magpie.latest[_log['_ml_latest']]
+    if not f.ok
+        return none
+    return frame.new[run = texts_in[f.run], key = texts_in[f.key], value = floats_in[f.value], step = ints_in[f.step], at = ints_in[f.at]]
+
+--- a run's latest metrics, by key
+fn latest_of[id]
+    found = []
+    f = latest_frame[]
+    mine = f[f.run eq id]
+    if not mine.ok
+        return found
+    ks = texts_in[mine.key]
+    vs = floats_in[mine.value]
+    ss = ints_in[mine.step]
+    ats = ints_in[mine.at]
+    for i in range[len[ks]]
+        found = push[found, Metric[ks[i], vs[i], ss[i], ats[i]]]
+    return found
+
+--- whether a value logged is newer than the one held: MLflow keeps the
+--- greatest step, then the latest time, then the greatest value
+fn _newer[m, held]
+    if m.step ne held.step
+        return m.step gt held.step
+    if m.at ne held.at
+        return m.at gt held.at
+    return m.value gt held.value
+
+--- metrics logged to a run (or to a logged model, `model` its id, '' none):
+--- every value appended, and the latest of each key kept
+fn log_metrics_of[id, ms, model]
+    ok = _writable[id]
+    if not ok.ok
+        return ok
+    if len[ms] eq 0
+        return 0
+    for m in ms
+        if trim[m.key] eq ''
+            return error['a metric needs a key', 'invalid']
+        if len[m.key] gt 250
+            return error['a metric\'s key is at most 250 characters, not `len[m.key]`', 'invalid']
+    runs_col = for m in ms
+        id
+    ks = for m in ms
+        m.key
+    vs = for m in ms
+        m.value
+    ss = for m in ms
+        m.step
+    ats = for m in ms
+        m.at
+    models = for m in ms
+        model
+    w = magpie.batch[_log['_ml_metrics'], frame.new[run = runs_col, key = ks, value = vs, step = ss, at = ats, model = models]]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    best = latest_of[id]
+    changed = []
+    for m in ms
+        place = -1
+        for i in range[len[best]]
+            if best[i].key eq m.key
+                place = i
+        if place lt 0
+            best = push[best, m]
+            changed = push[changed, m.key]
+        else
+            if _newer[m, best[place]]
+                best[place] = m
+                changed = push[changed, m.key]
+    if len[changed] eq 0
+        return len[ms]
+    kept = []
+    for b in best
+        if b.key in changed
+            kept = push[kept, b]
+    kruns = for b in kept
+        id
+    kks = for b in kept
+        b.key
+    kvs = for b in kept
+        b.value
+    kss = for b in kept
+        b.step
+    kats = for b in kept
+        b.at
+    l = magpie.batch[_log['_ml_latest'], frame.new[run = kruns, key = kks, value = kvs, step = kss, at = kats], by = ['run', 'key']]
+    if not l.ok
+        return error[l.reason, 'invalid']
+    return len[ms]
+
+fn log_metric[id, key, value, step]
+    return log_metrics_of[id, [Metric[key, float[value], step, clock[]]], '']
+
+--- every value of one metric of a run, by step then time
+fn history[id, key]
+    found = []
+    v = _history[id, key]
+    if not v.ok
+        return found
+    return v
+
+fn _history[id, key]
+    found = []
+    if _none_in[_log['_ml_metrics']]
+        return found
+    f = magpie.scan[_log['_ml_metrics']]
+    if not f.ok
+        return found
+    mine = f[f.run eq id]
+    if not mine.ok
+        return found
+    one = mine[mine.key eq key]
+    if not one.ok
+        return found
+    if len[one] eq 0
+        return found
+    shown = frame.new[value = floats_in[one.value], step = ints_in[one.step], at = ints_in[one.at]]
+    shown = sort[shown, ['step', 'at']]
+    vs = floats_in[shown.value]
+    ss = ints_in[shown.step]
+    ats = ints_in[shown.at]
+    --- a metric logged twice with the same value, step and time is one (a
+    --- client that retries a slow request logs it again; MLflow's store
+    --- keeps one): those lie together once sorted, and their values are
+    --- compared as text, so a NaN is the same as a NaN
+    same_time = []
+    for i in range[len[vs]]
+        shown_as = '`vs[i]`'
+        fresh = true
+        if i gt 0 and ss[i] eq ss[i - 1] and ats[i] eq ats[i - 1]
+            fresh = not (shown_as in same_time)
+        else
+            same_time = []
+        if fresh
+            same_time = push[same_time, shown_as]
+            found = push[found, Metric[key, vs[i], ss[i], ats[i]]]
+    return found
+
+--- every value of every metric of the runs named: run, key, value, step,
+--- at — what a chart of several runs draws
+fn histories[run_ids]
+    empty = frame.new[run = [''], key = [''], value = [0.0], step = [0], at = [0]]
+    none = empty[empty.run eq 'none']
+    v = _histories[run_ids]
+    if not v.ok
+        return none
+    return v
+
+fn _histories[run_ids]
+    empty = frame.new[run = [''], key = [''], value = [0.0], step = [0], at = [0]]
+    none = empty[empty.run eq 'none']
+    if _none_in[_log['_ml_metrics']]
+        return none
+    f = magpie.scan[_log['_ml_metrics']]
+    if not f.ok
+        return none
+    shown = frame.new[run = texts_in[f.run], key = texts_in[f.key], value = floats_in[f.value], step = ints_in[f.step], at = ints_in[f.at]]
+    mine = shown[shown.run in run_ids]
+    if not mine.ok
+        return none
+    return sort[mine, ['run', 'key', 'step', 'at']]
+
+--- the metrics logged against a logged model
+fn model_metrics[model_id]
+    found = []
+    v = _model_metrics[model_id]
+    if not v.ok
+        return found
+    return v
+
+fn _model_metrics[model_id]
+    found = []
+    if _none_in[_log['_ml_metrics']]
+        return found
+    f = magpie.scan[_log['_ml_metrics']]
+    if not f.ok
+        return found
+    mine = f[f.model eq model_id]
+    if not mine.ok
+        return found
+    ks = texts_in[mine.key]
+    vs = floats_in[mine.value]
+    ss = ints_in[mine.step]
+    ats = ints_in[mine.at]
+    runs_col = texts_in[mine.run]
+    for i in range[len[ks]]
+        found = push[found, Metric[ks[i], vs[i], ss[i], ats[i]]]
+    return found
+
+--- the run each value logged against a logged model was logged in
+fn model_metric_runs[model_id]
+    found = []
+    if _none_in[_log['_ml_metrics']]
+        return found
+    f = magpie.scan[_log['_ml_metrics']]
+    if not f.ok
+        return found
+    mine = f[f.model eq model_id]
+    if not mine.ok
+        return found
+    found = texts_in[mine.run]
+    return found
+
+--- --------------------------------------------------------------- datasets
+
+fn log_inputs_of[id, sets]
+    ok = _writable[id]
+    if not ok.ok
+        return ok
+    if len[sets] eq 0
+        return 0
+    runs_col = for d in sets
+        id
+    names = for d in sets
+        d.name
+    digests = for d in sets
+        d.digest
+    types = for d in sets
+        d.source_type
+    sources_col = for d in sets
+        d.source
+    schemas = for d in sets
+        d.schema
+    profiles = for d in sets
+        d.profile
+    contexts = for d in sets
+        d.context
+    w = magpie.batch[_log['_ml_inputs'], frame.new[run = runs_col, name = names, digest = digests, source_type = types, source = sources_col, schema = schemas, profile = profiles, context = contexts], by = ['run', 'name', 'digest', 'context']]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return len[sets]
+
+--- the datasets a run read
+fn inputs_of[id]
+    found = []
+    v = _inputs_of[id]
+    if not v.ok
+        return found
+    return v
+
+fn _inputs_of[id]
+    found = []
+    if _none_in[_log['_ml_inputs']]
+        return found
+    f = magpie.latest[_log['_ml_inputs']]
+    if not f.ok
+        return found
+    mine = f[f.run eq id]
+    if not mine.ok
+        return found
+    names = texts_in[mine.name]
+    digests = texts_in[mine.digest]
+    types = texts_in[mine.source_type]
+    sources_col = texts_in[mine.source]
+    schemas = texts_in[mine.schema]
+    profiles = texts_in[mine.profile]
+    contexts = texts_in[mine.context]
+    for i in range[len[names]]
+        found = push[found, Dataset[names[i], digests[i], types[i], sources_col[i], schemas[i], profiles[i], contexts[i]]]
+    return found
+
+--- a frame read as a dataset of a run, as MLflow's log_input writes one:
+--- named, its digest the first eight hex digits of a SHA-256 of its rows,
+--- its schema its columns' names and kinds, its profile its size
+fn _spec_type[t]
+    if t eq 'float'
+        return 'double'
+    if t eq 'int'
+        return 'long'
+    if t eq 'bool'
+        return 'boolean'
+    return 'string'
+
+fn _schema_of[f]
+    cols = f.columns
+    ts = f.dtypes
+    parts = []
+    for i in range[len[cols]]
+        if cols[i] ne '_pos'
+            parts = push[parts, '{"type": `quoted[_spec_type[ts[i]]]`, "name": `quoted[cols[i]]`, "required": true}']
+    joined = join[parts, ', ']
+    return '{"mlflow_colspec": [`joined`]}'
+
+fn log_input[id, f, name, context]
+    rows = sx.frame_json[f]
+    if not rows.ok
+        return error[rows.reason, 'invalid']
+    whole = hash[rows, 'sha256']
+    if not whole.ok
+        return error[whole.reason, 'invalid']
+    sum_of = slice[whole, 0, 8]
+    cols = 0
+    for c in f.columns
+        if c ne '_pos'
+            cols = cols + 1
+    profile = '{"num_rows": `len[f]`, "num_elements": `len[f] * cols`}'
+    d = Dataset[name, sum_of, 'code', '{"tags": {"mlflow.source.name": "myna"}}', _schema_of[f], profile, context]
+    return log_inputs_of[id, [d]]
+
+--- ----------------------------------------------------------- logged models
+
+fn _no_logged[]
+    return LoggedModel['', '', '', '', '', '', 0, 0, '']
+
+fn _put_logged[m, live]
+    return magpie.batch[_log['_ml_logged'], frame.new[id = [m.id], experiment = [m.experiment], name = [m.name], run = [m.run], status = [m.status], model_type = [m.model_type], created = [m.created], updated = [m.updated], location = [m.location], live = [live]], by = ['id']]
+
+fn all_logged[]
+    found = []
+    v = _all_logged[]
+    if not v.ok
+        return found
+    return v
+
+fn _all_logged[]
+    found = []
+    if _none_in[_log['_ml_logged']]
+        return found
+    f = magpie.latest[_log['_ml_logged']]
+    if not f.ok
+        return found
+    alive = f[f.live eq true]
+    if not alive.ok
+        return found
+    alive = sort[alive, 'created', desc = true]
+    ids = texts_in[alive.id]
+    exps = texts_in[alive.experiment]
+    names = texts_in[alive.name]
+    runs_col = texts_in[alive.run]
+    states = texts_in[alive.status]
+    types = texts_in[alive.model_type]
+    made = ints_in[alive.created]
+    moved = ints_in[alive.updated]
+    places = texts_in[alive.location]
+    for i in range[len[ids]]
+        found = push[found, LoggedModel[ids[i], exps[i], names[i], runs_col[i], states[i], types[i], made[i], moved[i], places[i]]]
+    return found
+
+fn logged_model[id]
+    found = _no_logged[]
+    for m in all_logged[]
+        if m.id eq id
+            found = m
+    return found
+
+fn logged_in[experiment_ids]
+    found = []
+    for m in all_logged[]
+        if m.experiment in experiment_ids
+            found = push[found, m]
+    return found
+
+--- a logged model made (MLflow 3): pending until its files are written
+fn create_logged[experiment_id, name, run_id, model_type]
+    e = experiment[experiment_id]
+    if e.id eq ''
+        return error['no experiment with id \'`experiment_id`\'', 'missing']
+    id = 'm-`new_id[]`'
+    at = clock[]
+    called = trim[name]
+    if called eq ''
+        called = 'model'
+    m = LoggedModel[id, experiment_id, called, run_id, 'LOGGED_MODEL_PENDING', model_type, at, at, '`e.location`/models/`id`/artifacts']
+    w = _put_logged[m, true]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return m
+
+fn finalize_logged[id, status]
+    m = logged_model[id]
+    if m.id eq ''
+        return error['no logged model with id \'`id`\'', 'missing']
+    m.status = status
+    m.updated = clock[]
+    w = _put_logged[m, true]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return m
+
+fn delete_logged[id]
+    m = logged_model[id]
+    if m.id eq ''
+        return error['no logged model with id \'`id`\'', 'missing']
+    w = _put_logged[m, false]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return id
+
+--- the logged models a run made (MLflow 3's outputs), and the step
+fn log_outputs_of[id, model_ids, steps]
+    if len[model_ids] eq 0
+        return 0
+    runs_col = for m in model_ids
+        id
+    w = magpie.batch[_log['_ml_outputs'], frame.new[run = runs_col, model = model_ids, step = steps], by = ['run', 'model']]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return len[model_ids]
+
+fn outputs_of[id]
+    found = []
+    if _none_in[_log['_ml_outputs']]
+        return found
+    f = magpie.latest[_log['_ml_outputs']]
+    if not f.ok
+        return found
+    mine = f[f.run eq id]
+    if not mine.ok
+        return found
+    found = texts_in[mine.model]
+    return found
+
+--- the step each of a run's logged models was logged at, in the order
+--- outputs_of gives them
+fn output_steps[id]
+    found = []
+    if _none_in[_log['_ml_outputs']]
+        return found
+    f = magpie.latest[_log['_ml_outputs']]
+    if not f.ok
+        return found
+    mine = f[f.run eq id]
+    if not mine.ok
+        return found
+    found = ints_in[mine.step]
+    return found
+
+--- ---------------------------------------------------------------- files
+
+--- a path inside a run's files: no part may climb out of them
+fn _within_files[root_dir, path]
+    clean = trim[path]
+    if clean eq '' or clean eq '.' or clean eq '/'
+        return root_dir
+    if starts[clean, '/'] or '\\' in clean
+        return error['a path inside the files is relative and uses / alone: \'`clean`\'', 'invalid']
+    for piece in split[clean, '/']
+        if piece eq '..'
+            return error['a path inside the files may not climb out of them', 'invalid']
+    return '`root_dir`/`clean`'
+
+--- the files and folders at a path under a folder of kept files, the
+--- folders first: each one's path from that folder, and a file's size
+fn list_files[root_dir, path]
+    found = []
+    at = _within_files[root_dir, path]
+    if not at.ok
+        return found
+    entries = ls[at]
+    if not entries.ok
+        return found
+    prefix = trim[path]
+    while starts[prefix, '/']
+        prefix = slice[prefix, 1, len[prefix]]
+    while ends[prefix, '/']
+        prefix = slice[prefix, 0, len[prefix] - 1]
+    dirs = []
+    files = []
+    for e in entries
+        rel = e
+        if prefix ne ''
+            rel = '`prefix`/`e`'
+        inner = ls['`at`/`e`']
+        if inner.ok
+            dirs = push[dirs, Entry[rel, true, 0]]
+        else
+            b = sx.file['`at`/`e`']
+            size = 0
+            if b.ok
+                size = len[b]
+            files = push[files, Entry[rel, false, size]]
+    return concat[dirs, files]
+
+fn run_files[id, path]
+    return list_files[run[id].artifacts, path]
+
+--- a file of a run's written: its text at the path under the run's files
+fn _parent_of[path]
+    pieces = split[path, '/']
+    if len[pieces] lt 2
+        return ''
+    return join[slice[pieces, 0, len[pieces] - 1], '/']
+
+fn write_file[root_dir, path, body]
+    at = _within_files[root_dir, path]
+    if not at.ok
+        return at
+    parent = _parent_of[at]
+    if parent ne '' and not exists[parent]
+        made = mkdir[parent]
+        if not made.ok
+            return error[made.reason, 'invalid']
+    w = write[at, body]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return path
+
+fn log_text[id, body, path]
+    r = run[id]
+    if r.id eq ''
+        return error['no run with id \'`id`\'', 'missing']
+    return write_file[r.artifacts, path, body]
+
+--- a file copied into a run's files, under a folder ('' the top)
+fn log_artifact[id, source, folder]
+    r = run[id]
+    if r.id eq ''
+        return error['no run with id \'`id`\'', 'missing']
+    pieces = split[source, '/']
+    name = pieces[len[pieces] - 1]
+    dest = name
+    if trim[folder] ne ''
+        dest = '`trim[folder]`/`name`'
+    at = _within_files[r.artifacts, dest]
+    if not at.ok
+        return at
+    parent = _parent_of[at]
+    if parent ne '' and not exists[parent]
+        made = mkdir[parent]
+    c = cp[source, at]
+    if not c.ok
+        return error[c.reason, 'invalid']
+    return dest
+
+--- a frame kept as a run's table (JSON records, CSV or Parquet by the
+--- path's ending)
+fn log_table[id, f, path]
+    r = run[id]
+    if r.id eq ''
+        return error['no run with id \'`id`\'', 'missing']
+    at = _within_files[r.artifacts, path]
+    if not at.ok
+        return at
+    parent = _parent_of[at]
+    if parent ne '' and not exists[parent]
+        made = mkdir[parent]
+    s = frame.save[f, at]
+    if not s.ok
+        return error[s.reason, 'invalid']
+    return path
+
+--- the text of a kept file, '' where it is none
+fn file_text[root_dir, path]
+    at = _within_files[root_dir, path]
+    if not at.ok
+        return ''
+    t = read[at]
+    if not t.ok
+        return ''
+    return t
+
+--- ------------------------------------------------- the client for programs
+
+--- the run a program logs to: the one MLFLOW_RUN_ID names (a project's
+--- run, started for it), else a new run of the experiment named — made
+--- where there is none — under the name given; its id
+fn start_run[experiment_name, run_name]
+    ready[]
+    given = env['MLFLOW_RUN_ID', '']
+    if given ne ''
+        if run[given].id ne ''
+            return given
+    e = experiment_named[experiment_name]
+    eid = e.id
+    if eid eq ''
+        made = create_experiment[experiment_name, '']
+        if not made.ok
+            return made
+        eid = made
+    r = create_run[eid, run_name, env['USER', ''], 0]
+    if not r.ok
+        return r
+    source = env['MYNA_NOTEBOOK', '']
+    if source ne ''
+        t = put_tags['run', r.id, '', ['mlflow.source.name', 'mlflow.source.type'], [source, 'NOTEBOOK'], true]
+    return r.id
+
+--- parameters and metrics from a map: each value written as text, and a
+--- metric's at a step
+fn log_params[id, m]
+    ks = keys[m]
+    vs = for k in ks
+        '`m[k]`'
+    return log_params_of[id, ks, vs]
+
+fn log_metrics[id, m, step]
+    at = clock[]
+    ms = for k in keys[m]
+        Metric[k, float[m[k]], step, at]
+    return log_metrics_of[id, ms, '']
+
+fn tag_run[id, key, value]
+    ok = _writable[id]
+    if not ok.ok
+        return ok
+    return set_tag['run', id, '', key, '`value`']
+
+--- a run's description, as MLflow keeps it: the tag mlflow.note.content
+fn describe_run[id, body]
+    return tag_run[id, 'mlflow.note.content', body]
+
+test experiments_runs_and_what_they_log[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    ready[]
+    assert[experiment['0'].name eq 'Default']
+    assert[ends[experiment['0'].location, '/.mlartifacts/0']]
+    assert[starts[experiment['0'].location, '/']]
+    e = create_experiment['churn', '']
+    assert[e eq '1']
+    again = create_experiment['churn', '']
+    assert[not again.ok]
+    assert[again.kind eq 'exists']
+    r = create_run['1', 'first', 'ada', 1000]
+    assert[r.status eq 'RUNNING']
+    assert[r.name eq 'first']
+    assert[ends[r.artifacts, '/1/`r.id`/artifacts']]
+    assert[len[r.id] eq 32]
+    p = log_params_of[r.id, ['alpha', 'layers'], ['0.5', '3']]
+    assert[p eq 2]
+    same = log_param[r.id, 'alpha', 0.5]
+    assert[same.ok]
+    changed = log_param[r.id, 'alpha', 0.7]
+    assert[not changed.ok]
+    assert[len[params_of[r.id]] eq 2]
+    for step in range[4]
+        m = log_metrics_of[r.id, [Metric['loss', 1.0 / float[step + 1], step, 2000 + step]], '']
+    m = log_metrics_of[r.id, [Metric['loss', 9.0, 1, 9000]], '']
+    --- a client's retry logs the same metric again: it is one
+    m = log_metrics_of[r.id, [Metric['loss', 9.0, 1, 9000]], '']
+    nan = 0.0 / 0.0
+    m = log_metrics_of[r.id, [Metric['odd', nan, 0, 5], Metric['odd', nan, 0, 5], Metric['odd', 1.0, 0, 5]], '']
+    assert[len[history[r.id, 'odd']] eq 2]
+    l = latest_of[r.id]
+    assert[len[l] eq 2]
+    assert[l[0].value eq 0.25]
+    assert[l[0].step eq 3]
+    h = history[r.id, 'loss']
+    steps = for x in h
+        x.step
+    assert[steps eq [0, 1, 1, 2, 3]]
+    t = tag_run[r.id, 'team', 'lab']
+    assert[tag_value['run', r.id, '', 'team'] eq 'lab']
+    assert[tag_value['run', r.id, '', 'mlflow.runName'] eq 'first']
+    d = delete_tag['run', r.id, '', 'team']
+    assert[tag_value['run', r.id, '', 'team'] eq '']
+    w = log_text[r.id, 'hello', 'notes/hello.txt']
+    assert[w.ok]
+    files = run_files[r.id, '']
+    assert[len[files] eq 1]
+    assert[files[0].path eq 'notes']
+    assert[files[0].is_dir]
+    inner = run_files[r.id, 'notes']
+    assert[inner[0].path eq 'notes/hello.txt']
+    assert[inner[0].size eq 5]
+    climb = log_text[r.id, 'x', '../escape.txt']
+    assert[not climb.ok]
+    f = frame.new[x = [1.0, 2.0], y = ['a', 'b']]
+    i = log_input[r.id, f, 'train', 'training']
+    ds = inputs_of[r.id]
+    assert[ds[0].name eq 'train']
+    assert['"num_rows": 2' in ds[0].profile]
+    assert['"type": "double", "name": "x"' in ds[0].schema]
+    done = end_run[r.id, '']
+    assert[run[r.id].status eq 'FINISHED']
+    assert[run[r.id].finish gt 0]
+    assert[len[runs_in[['1'], 'active']] eq 1]
+    x = delete_run[r.id]
+    assert[len[runs_in[['1'], 'active']] eq 0]
+    assert[len[runs_in[['1'], 'deleted']] eq 1]
+    y = restore_run[r.id]
+    lm = create_logged['1', 'model', r.id, '']
+    assert[starts[lm.id, 'm-']]
+    assert[lm.status eq 'LOGGED_MODEL_PENDING']
+    fin = finalize_logged[lm.id, 'LOGGED_MODEL_READY']
+    assert[logged_model[lm.id].status eq 'LOGGED_MODEL_READY']
+    o = log_outputs_of[r.id, [lm.id], [0]]
+    assert[outputs_of[r.id] eq [lm.id]]
+    de = delete_experiment['1']
+    assert[experiment['1'].stage eq 'deleted']
+    assert[run[r.id].stage eq 'deleted']
+    re = restore_experiment['1']
+    assert[run[r.id].stage eq 'active']
+    nb = start_run['from a notebook', '']
+    assert[len[nb] eq 32]
+    assert[experiment_named['from a notebook'].id eq '2']
+    gone = rm[workspace.home[]]

@@ -1,0 +1,635 @@
+--- MLflow's model registry, written in Crow over Magpie: registered
+--- models, their numbered versions, aliases and stages, and prompts (a
+--- prompt is a registered model tagged as one, each version holding its
+--- text, as MLflow keeps them). Logs in the workspace's folder:
+---
+---   _ml_models    a row per registered model, keyed by an id of its own,
+---                 so a rename moves its versions, aliases and tags with it
+---   _ml_versions  a row per model and version number; a deleted version
+---                 is marked, and its number is never given again
+---   _ml_aliases   a row per model and alias: the version it names, live
+---                 false once deleted
+---
+--- A model's tags are tracking's tags of entity 'registered_model', a
+--- version's of entity 'model_version' with the version in `sub`, so the
+--- two never mix.
+use frame, magpie
+use myna.workspace
+use myna.tracking
+
+struct RegModel [id, name, description, created, updated, stage]
+struct ModelVersion [model, name, version, source, run, logged, status, stage, description, created, updated, user, live]
+struct AliasOf [alias, version]
+
+fn _log[name]
+    return workspace.at[name]
+
+fn _none_in[dir]
+    h = magpie.head[dir]
+    if not h.ok
+        return true
+    return h lt 0
+
+fn _no_model[]
+    return RegModel['', '', '', 0, 0, '']
+
+fn _no_version[]
+    return ModelVersion['', '', 0, '', '', '', '', '', '', 0, 0, '', false]
+
+fn _put_model[m]
+    return magpie.batch[_log['_ml_models'], frame.new[id = [m.id], name = [m.name], description = [m.description], created = [m.created], updated = [m.updated], stage = [m.stage]], by = ['id']]
+
+--- ----------------------------------------------------------- models
+
+--- every registered model that is not deleted, by name
+fn models_all[]
+    found = []
+    v = _models_all[]
+    if not v.ok
+        return found
+    return v
+
+fn _models_all[]
+    found = []
+    if _none_in[_log['_ml_models']]
+        return found
+    f = magpie.latest[_log['_ml_models']]
+    if not f.ok
+        return found
+    live = f[f.stage eq 'active']
+    if not live.ok
+        return found
+    if len[live] eq 0
+        return found
+    live = sort[live, 'name']
+    ids = tracking.texts_in[live.id]
+    names = tracking.texts_in[live.name]
+    notes = tracking.texts_in[live.description]
+    made = tracking.ints_in[live.created]
+    moved = tracking.ints_in[live.updated]
+    for i in range[len[ids]]
+        found = push[found, RegModel[ids[i], names[i], notes[i], made[i], moved[i], 'active']]
+    return found
+
+fn model_named[name]
+    found = _no_model[]
+    for m in models_all[]
+        if m.name eq name
+            found = m
+    return found
+
+--- whether a model is a prompt
+fn is_prompt[m]
+    return tracking.tag_value['registered_model', m.id, '', 'mlflow.prompt.is_prompt'] eq 'true'
+
+--- a model registered: its record, or why not
+fn create_model[name, description]
+    clean = trim[name]
+    if clean eq ''
+        return error['a registered model needs a name', 'invalid']
+    if model_named[clean].id ne ''
+        return error['a registered model named \'`clean`\' exists', 'exists']
+    at = tracking.clock[]
+    m = RegModel[tracking.new_id[], clean, description, at, at, 'active']
+    w = _put_model[m]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return m
+
+fn _held_model[name]
+    m = model_named[name]
+    if m.id eq ''
+        return error['no registered model named \'`name`\'', 'missing']
+    return m
+
+--- a model renamed: versions, aliases and tags stay with it
+fn rename_model[name, new_name]
+    m = _held_model[name]
+    if not m.ok
+        return m
+    clean = trim[new_name]
+    if clean eq ''
+        return error['a registered model needs a name', 'invalid']
+    if clean ne name and model_named[clean].id ne ''
+        return error['a registered model named \'`clean`\' exists', 'exists']
+    m.name = clean
+    m.updated = tracking.clock[]
+    w = _put_model[m]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return m
+
+fn describe_model[name, note]
+    m = _held_model[name]
+    if not m.ok
+        return m
+    m.description = note
+    m.updated = tracking.clock[]
+    w = _put_model[m]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return m
+
+--- a model deleted, with every version and alias: its name is free again
+fn delete_model[name]
+    m = _held_model[name]
+    if not m.ok
+        return m
+    for v in versions_of[name]
+        d = _put_version_live[v, false]
+    for a in aliases_of[name]
+        x = _put_alias[m.id, a.alias, a.version, false]
+    m.stage = 'deleted'
+    m.updated = tracking.clock[]
+    w = _put_model[m]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return name
+
+--- --------------------------------------------------------- versions
+
+fn _put_version[v]
+    return _put_version_live[v, v.live]
+
+fn _put_version_live[v, live]
+    return magpie.batch[_log['_ml_versions'], frame.new[model = [v.model], version = [v.version], source = [v.source], run = [v.run], logged = [v.logged], status = [v.status], stage = [v.stage], description = [v.description], created = [v.created], updated = [v.updated], user = [v.user], live = [live]], by = ['model', 'version']]
+
+--- every version of every model as the log holds it, deleted ones too
+fn _versions_frame[]
+    empty = frame.new[model = [''], version = [0]]
+    none = empty[empty.model eq 'none']
+    if _none_in[_log['_ml_versions']]
+        return none
+    f = magpie.latest[_log['_ml_versions']]
+    if not f.ok
+        return none
+    return f
+
+--- a model's versions, the newest first; deleted ones are left out
+fn versions_of[name]
+    found = []
+    v = _versions_of[name, false]
+    if not v.ok
+        return found
+    return v
+
+fn _versions_of[name, with_deleted]
+    found = []
+    m = model_named[name]
+    if m.id eq ''
+        return found
+    f = _versions_frame[]
+    if len[f] eq 0
+        return found
+    mine = f[f.model eq m.id]
+    if not mine.ok
+        return found
+    if len[mine] eq 0
+        return found
+    mine = sort[mine, 'version', desc = true]
+    nums = tracking.ints_in[mine.version]
+    srcs = tracking.texts_in[mine.source]
+    runs = tracking.texts_in[mine.run]
+    lms = tracking.texts_in[mine.logged]
+    states = tracking.texts_in[mine.status]
+    stages = tracking.texts_in[mine.stage]
+    notes = tracking.texts_in[mine.description]
+    made = tracking.ints_in[mine.created]
+    moved = tracking.ints_in[mine.updated]
+    users = tracking.texts_in[mine.user]
+    lives = tracking.truths_in[mine.live]
+    for i in range[len[nums]]
+        if lives[i] or with_deleted
+            found = push[found, ModelVersion[m.id, m.name, nums[i], srcs[i], runs[i], lms[i], states[i], stages[i], notes[i], made[i], moved[i], users[i], lives[i]]]
+    return found
+
+--- one version, by its number
+fn version_of[name, number]
+    found = _no_version[]
+    for v in versions_of[name]
+        if v.version eq number
+            found = v
+    return found
+
+fn _held_version[name, number]
+    m = model_named[name]
+    if m.id eq ''
+        return error['no registered model named \'`name`\'', 'missing']
+    v = version_of[name, number]
+    if v.model eq ''
+        return error['no version `number` of the registered model \'`name`\'', 'missing']
+    return v
+
+--- where a version's files may lie: a run's files or a logged model's,
+--- written as MLflow's client writes them (`runs:/<run>/<path>`,
+--- `models:/<logged model id>`) or as the folder itself; any other folder
+--- is refused, as is a path that climbs out with `..`
+fn source_place[source, run_id]
+    if '..' in split[source, '/'] or '\\' in source or '#' in source or '?' in source
+        return error['a version\'s source may not climb out of its folder: \'`source`\'', 'invalid']
+    if starts[source, 'runs:/']
+        rest = slice[source, 6, len[source]]
+        parts = split[rest, '/']
+        r = tracking.run[parts[0]]
+        if r.id eq ''
+            return error['no run with id \'`parts[0]`\'', 'missing']
+        below = join[slice[parts, 1, len[parts]], '/']
+        if below eq ''
+            return r.artifacts
+        return '`r.artifacts`/`below`'
+    if starts[source, 'models:/']
+        id = slice[source, 8, len[source]]
+        lm = tracking.logged_model[id]
+        if lm.id eq ''
+            return error['no logged model with id \'`id`\'', 'missing']
+        return lm.location
+    if not starts[source, '/']
+        return error['a version\'s source is a run\'s or a logged model\'s files, not \'`source`\'', 'invalid']
+    if run_id ne ''
+        r = tracking.run[run_id]
+        if r.id eq ''
+            return error['no run with id \'`run_id`\'', 'missing']
+        if _under[source, r.artifacts]
+            return source
+        for lm in tracking.logged_in[[r.experiment]]
+            if _under[source, lm.location]
+                return source
+        return error['the source \'`source`\' lies outside the files of run \'`run_id`\'', 'invalid']
+    for lm in tracking.all_logged[]
+        if _under[source, lm.location]
+            return source
+    for r in tracking.all_runs[]
+        if _under[source, r.artifacts]
+            return source
+    return error['the source \'`source`\' lies outside every run\'s and logged model\'s files', 'invalid']
+
+--- whether a path lies at or under a folder, by whole components
+fn _under[path, folder]
+    if folder eq ''
+        return false
+    return path eq folder or starts[path, '`folder`/']
+
+--- a version made: the next number the model has never given
+fn create_version[name, source, run_id, logged_id, description, user]
+    m = _held_model[name]
+    if not m.ok
+        return m
+    if is_prompt[m]
+        return _add_version[m, source, run_id, logged_id, description, user]
+    place = source_place[source, run_id]
+    if not place.ok
+        return place
+    run_of = run_id
+    if run_of eq '' and starts[source, 'models:/']
+        run_of = tracking.logged_model[slice[source, 8, len[source]]].run
+    return _add_version[m, source, run_of, logged_id, description, user]
+
+--- a version added past the newest number the model ever gave, its
+--- source already checked
+fn _add_version[m, source, run_id, logged_id, description, user]
+    top = 0
+    for v in _versions_of[m.name, true]
+        if v.version gt top
+            top = v.version
+    at = tracking.clock[]
+    lm = logged_id
+    if lm eq '' and starts[source, 'models:/']
+        lm = slice[source, 8, len[source]]
+    v = ModelVersion[m.id, m.name, top + 1, source, run_id, lm, 'READY', 'None', description, at, at, user, true]
+    w = _put_version[v]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    m.updated = at
+    u = _put_model[m]
+    return v
+
+fn describe_version[name, number, note]
+    v = _held_version[name, number]
+    if not v.ok
+        return v
+    v.description = note
+    v.updated = tracking.clock[]
+    w = _put_version[v]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return v
+
+--- MLflow's stages, as its client writes them
+fn _stage_named[said]
+    for s in ['None', 'Staging', 'Production', 'Archived']
+        if lower[s] eq lower[said]
+            return s
+    return error['a stage is None, Staging, Production or Archived, not \'`said`\'', 'invalid']
+
+--- a version moved to a stage; with `archive_existing`, every other
+--- version in that stage is archived
+fn transition[name, number, said, archive_existing]
+    v = _held_version[name, number]
+    if not v.ok
+        return v
+    s = _stage_named[said]
+    if not s.ok
+        return s
+    at = tracking.clock[]
+    if archive_existing and (s eq 'Staging' or s eq 'Production')
+        for o in versions_of[name]
+            if o.version ne number and o.stage eq s
+                o.stage = 'Archived'
+                o.updated = at
+                w = _put_version[o]
+    v.stage = s
+    v.updated = at
+    w = _put_version[v]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return v
+
+--- a version deleted: its aliases go with it, and its number is not given
+--- again
+fn delete_version[name, number]
+    v = _held_version[name, number]
+    if not v.ok
+        return v
+    m = model_named[name]
+    for a in aliases_of[name]
+        if a.version eq number
+            x = _put_alias[m.id, a.alias, number, false]
+    v.updated = tracking.clock[]
+    w = _put_version_live[v, false]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return number
+
+--- the newest version in each stage asked for (every stage when none is)
+fn latest_versions[name, stages]
+    found = []
+    seen = []
+    for v in versions_of[name]
+        wanted = len[stages] eq 0
+        for s in stages
+            if lower[s] eq lower[v.stage]
+                wanted = true
+        if wanted and v.stage not in seen
+            seen = push[seen, v.stage]
+            found = push[found, v]
+    return found
+
+--- ---------------------------------------------------------- aliases
+
+fn _put_alias[model_id, alias, number, live]
+    return magpie.batch[_log['_ml_aliases'], frame.new[model = [model_id], alias = [alias], version = [number], live = [live]], by = ['model', 'alias']]
+
+--- a model's live aliases, by name
+fn aliases_of[name]
+    found = []
+    v = _aliases_of[name]
+    if not v.ok
+        return found
+    return v
+
+fn _aliases_of[name]
+    found = []
+    m = model_named[name]
+    if m.id eq ''
+        return found
+    if _none_in[_log['_ml_aliases']]
+        return found
+    f = magpie.latest[_log['_ml_aliases']]
+    if not f.ok
+        return found
+    mine = f[f.model eq m.id]
+    if not mine.ok
+        return found
+    if len[mine] eq 0
+        return found
+    alive = mine[mine.live eq true]
+    if not alive.ok
+        return found
+    if len[alive] eq 0
+        return found
+    alive = sort[alive, 'alias']
+    names = tracking.texts_in[alive.alias]
+    nums = tracking.ints_in[alive.version]
+    for i in range[len[names]]
+        found = push[found, AliasOf[names[i], nums[i]]]
+    return found
+
+--- the aliases naming one version
+fn aliases_for[name, number]
+    found = []
+    for a in aliases_of[name]
+        if a.version eq number
+            found = push[found, a.alias]
+    return found
+
+--- an alias set: it names one version, moved from any other; `latest` and
+--- `v<number>` are refused, as MLflow reads them as references
+fn set_alias[name, alias, number]
+    clean = trim[alias]
+    if clean eq ''
+        return error['an alias needs a name', 'invalid']
+    if lower[clean] eq 'latest'
+        return error['\'latest\' names the newest version and cannot be an alias', 'invalid']
+    if starts[lower[clean], 'v'] and _digits[slice[clean, 1, len[clean]]]
+        return error['\'`clean`\' reads as a version number and cannot be an alias', 'invalid']
+    v = _held_version[name, number]
+    if not v.ok
+        return v
+    m = model_named[name]
+    w = _put_alias[m.id, clean, number, true]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return clean
+
+fn _digits[s]
+    if s eq ''
+        return false
+    for c in split[s, '']
+        if c not in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+            return false
+    return true
+
+fn delete_alias[name, alias]
+    m = _held_model[name]
+    if not m.ok
+        return m
+    for a in aliases_of[name]
+        if a.alias eq alias
+            w = _put_alias[m.id, alias, a.version, false]
+            return alias
+    return error['the registered model \'`name`\' has no alias \'`alias`\'', 'missing']
+
+fn version_by_alias[name, alias]
+    m = _held_model[name]
+    if not m.ok
+        return m
+    for a in aliases_of[name]
+        if a.alias eq alias
+            return _held_version[name, a.version]
+    return error['the registered model \'`name`\' has no alias \'`alias`\'', 'missing']
+
+--- a version by a reference as a program writes it: a number, `latest`,
+--- an alias, or `v<number>`
+fn resolve[name, ref]
+    if _digits[ref]
+        return _held_version[name, workspace.small[int[ref]]]
+    if lower[ref] eq 'latest'
+        vs = versions_of[name]
+        if len[vs] eq 0
+            return error['the registered model \'`name`\' has no versions', 'missing']
+        return vs[0]
+    if starts[lower[ref], 'v'] and _digits[slice[ref, 1, len[ref]]]
+        return _held_version[name, workspace.small[int[slice[ref, 1, len[ref]]]]]
+    return version_by_alias[name, ref]
+
+--- ---------------------------------------------------------- prompts
+
+--- every prompt, by name
+fn prompts[]
+    found = []
+    for m in models_all[]
+        if is_prompt[m]
+            found = push[found, m]
+    return found
+
+--- a prompt's text at a version
+fn prompt_text[name, number]
+    m = model_named[name]
+    return tracking.tag_value['model_version', m.id, '`number`', 'mlflow.prompt.text']
+
+--- a prompt version registered: the model is made the first time, tagged
+--- as a prompt, and each version holds its text
+fn register_prompt[name, template, note]
+    m = model_named[name]
+    if m.id eq ''
+        made = create_model[name, '']
+        if not made.ok
+            return made
+        m = made
+        t = tracking.set_tag['registered_model', m.id, '', 'mlflow.prompt.is_prompt', 'true']
+    else
+        if not is_prompt[m]
+            return error['\'`name`\' is a registered model, not a prompt', 'invalid']
+    v = _add_version[m, 'prompts:/`name`', '', '', note, '']
+    if not v.ok
+        return v
+    t = tracking.put_tags['model_version', m.id, '`v.version`', ['mlflow.prompt.text', '_mlflow_prompt_type', 'mlflow.prompt.is_prompt'], [template, 'text', 'true'], true]
+    return v
+
+--- the variables a template names, `{{ name }}`, each once in order
+fn prompt_variables[template]
+    found = []
+    pieces = split[template, '{{']
+    for i in range[1, len[pieces]]
+        inner = split[pieces[i], '}}']
+        if len[inner] gt 1
+            name = trim[inner[0]]
+            if name ne '' and name not in found
+                found = push[found, name]
+    return found
+
+--- a template filled in one pass: a value that itself holds `{{x}}` is
+--- left as written, never filled again
+fn format_prompt[template, filled]
+    out = []
+    pieces = split[template, '{{']
+    out = push[out, pieces[0]]
+    for i in range[1, len[pieces]]
+        inner = split[pieces[i], '}}']
+        if len[inner] lt 2
+            out = push[out, '{{`pieces[i]`']
+        else
+            name = trim[inner[0]]
+            rest = join[slice[inner, 1, len[inner]], '}}']
+            if name in filled
+                out = push[out, '`filled[name]``rest`']
+            else
+                out = push[out, '{{`inner[0]`}}`rest`']
+    return join[out, '']
+
+--- ------------------------------------------------- a program's calls
+
+--- a run's model registered: the run's `model` folder (or the path
+--- given) as a new version of the model named, made if it is new
+fn register[run_id, path, name]
+    m = model_named[name]
+    if m.id eq ''
+        made = create_model[name, '']
+        if not made.ok
+            return made
+    r = tracking.run[run_id]
+    if r.id eq ''
+        return error['no run with id \'`run_id`\'', 'missing']
+    where_to = path
+    if where_to eq ''
+        where_to = 'model'
+    return create_version[name, 'runs:/`run_id`/`where_to`', run_id, '', '', r.user]
+
+--- the folder of the version a reference names
+fn model_folder[name, ref]
+    v = resolve[name, ref]
+    if not v.ok
+        return v
+    return source_place[v.source, v.run]
+
+test models_versions_aliases_and_prompts[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    tracking.ready[]
+    e = tracking.create_experiment['houses', '']
+    r = tracking.create_run[e, 'ridge', 'ada', 0]
+    m = create_model['price', 'predicts a price']
+    assert[m.name eq 'price']
+    again = create_model['price', '']
+    assert[again.kind eq 'exists']
+    v1 = register[r.id, '', 'price']
+    assert[v1.version eq 1]
+    assert[v1.source eq 'runs:/`r.id`/model']
+    v2 = register[r.id, 'model2', 'price']
+    assert[v2.version eq 2]
+    outside = create_version['price', '/etc', r.id, '', '', '']
+    assert[outside.kind eq 'invalid']
+    climb = create_version['price', 'runs:/`r.id`/../x', r.id, '', '', '']
+    assert[climb.kind eq 'invalid']
+    a = set_alias['price', 'champion', 1]
+    assert[a eq 'champion']
+    assert[version_by_alias['price', 'champion'].version eq 1]
+    moved = set_alias['price', 'champion', 2]
+    assert[aliases_for['price', 2] eq ['champion']]
+    assert[len[aliases_for['price', 1]] eq 0]
+    assert[set_alias['price', 'latest', 1].kind eq 'invalid']
+    assert[set_alias['price', 'v3', 1].kind eq 'invalid']
+    assert[resolve['price', 'latest'].version eq 2]
+    assert[resolve['price', '1'].version eq 1]
+    assert[resolve['price', 'champion'].version eq 2]
+    t = tracking.set_tag['model_version', m.id, '2', 'reviewed', 'yes']
+    mt = tracking.set_tag['registered_model', m.id, '', 'team', 'pricing']
+    assert[tracking.tag_value['model_version', m.id, '2', 'reviewed'] eq 'yes']
+    assert[tracking.tag_value['registered_model', m.id, '', 'reviewed'] eq '']
+    s = transition['price', 1, 'production', false]
+    assert[s.stage eq 'Production']
+    s2 = transition['price', 2, 'Production', true]
+    assert[version_of['price', 1].stage eq 'Archived']
+    assert[latest_versions['price', ['Production']][0].version eq 2]
+    renamed = rename_model['price', 'house price']
+    assert[len[versions_of['house price']] eq 2]
+    assert[aliases_for['house price', 2] eq ['champion']]
+    assert[tracking.tag_value['registered_model', renamed.id, '', 'team'] eq 'pricing']
+    assert[model_named['price'].id eq '']
+    d = delete_version['house price', 2]
+    assert[version_by_alias['house price', 'champion'].kind eq 'missing']
+    v3 = create_version['house price', 'runs:/`r.id`/model', r.id, '', '', '']
+    assert[v3.version eq 3]
+    p1 = register_prompt['greet', 'Hello {{ name }}, welcome to {{place}}.', 'first']
+    p2 = register_prompt['greet', 'Hi {{name}}!', 'shorter']
+    assert[p2.version eq 2]
+    assert[prompt_text['greet', 1] eq 'Hello {{ name }}, welcome to {{place}}.']
+    assert[prompt_variables[prompt_text['greet', 1]] eq ['name', 'place']]
+    assert[format_prompt['Hello {{ name }}, welcome to {{place}}.', map[name = '{{place}}', place = 'Myna']] eq 'Hello {{place}}, welcome to Myna.']
+    assert[len[prompts[]] eq 1]
+    assert[register_prompt['house price', 'x', ''].kind eq 'invalid']
+    dm = delete_model['house price']
+    assert[model_named['house price'].id eq '']
+    back = create_model['house price', '']
+    assert[back.ok]
+    assert[len[versions_of['house price']] eq 0]

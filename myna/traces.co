@@ -1,0 +1,467 @@
+--- MLflow's traces, written in Crow: what an LLM program did on one
+--- request, as a tree of spans, and what people and checks said of it.
+---
+---   _ml_traces       a row per trace, keyed by its id: experiment, name,
+---                    when it began (ms), how long it ran (ms), its state,
+---                    previews of what came in and went out, its metadata
+---                    as JSON text, the folder of its files, its stage
+---   _ml_assessments  a row per trace and assessment: feedback or an
+---                    expectation, its value as JSON text, who gave it
+---
+--- A trace's spans are the file `traces.json` in its folder, in MLflow's
+--- own form, so MLflow's client writes and reads them there: one source
+--- for the spans, never a second copy. The tree is built from each span's
+--- parent, never from the order the file holds them in, and text is kept
+--- as it was given, NUL bytes included. A trace's tags are tracking's
+--- tags of entity 'trace'.
+use frame, magpie
+use sys as sx
+use myna.workspace
+use myna.tracking
+
+struct TraceInfo [id, experiment, name, began, took, state, request_preview, response_preview, client_request_id, metadata, location, stage]
+struct SpanRow [id, parent, name, span_type, span_kind, began, ended, inputs, outputs, status, message, attributes, depth]
+struct Assessment [trace_id, id, name, assessment_type, source_type, source_id, value, rationale, span, created, live]
+struct Trace [info, spans]
+
+fn _log[name]
+    return workspace.at[name]
+
+fn _none_in[dir]
+    h = magpie.head[dir]
+    if not h.ok
+        return true
+    return h lt 0
+
+fn _no_trace[]
+    return TraceInfo['', '', '', 0, 0, '', '', '', '', '{}', '', '']
+
+fn new_trace_id[]
+    return 'tr-`tracking.new_id[]`'
+
+fn _put_trace[t]
+    return magpie.batch[_log['_ml_traces'], frame.new[id = [t.id], experiment = [t.experiment], name = [t.name], began = [t.began], took = [t.took], state = [t.state], request_preview = [t.request_preview], response_preview = [t.response_preview], client_request_id = [t.client_request_id], metadata = [t.metadata], location = [t.location], stage = [t.stage]], by = ['id']]
+
+--- the folder a trace's files go to, under its experiment's
+fn _trace_place[experiment_id, id]
+    e = tracking.experiment[experiment_id]
+    return '`e.location`/traces/`id`/artifacts'
+
+--- a preview: the first 1000 characters, as MLflow keeps them
+fn preview[t]
+    if len[t] lte 1000
+        return t
+    return slice[t, 0, 1000]
+
+--- a trace recorded: its info as given, its folder named, its experiment
+--- touched
+fn record_trace[t]
+    e = tracking.experiment[t.experiment]
+    if e.id eq ''
+        return error['no experiment with id \'`t.experiment`\'', 'missing']
+    if e.stage eq 'deleted'
+        return error['the experiment \'`e.name`\' is deleted', 'invalid']
+    held = t
+    if held.id eq ''
+        held.id = new_trace_id[]
+    if held.location eq ''
+        held.location = _trace_place[t.experiment, held.id]
+    if held.state eq ''
+        held.state = 'OK'
+    held.stage = 'active'
+    held.request_preview = preview[held.request_preview]
+    held.response_preview = preview[held.response_preview]
+    w = _put_trace[held]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    k = tracking.touch_experiment[t.experiment]
+    tg = tracking.set_tag['trace', held.id, '', 'mlflow.artifactLocation', held.location]
+    if held.name ne ''
+        n = tracking.set_tag['trace', held.id, '', 'mlflow.traceName', held.name]
+    return held
+
+--- every trace as the log holds it
+fn _all_traces[]
+    found = []
+    if _none_in[_log['_ml_traces']]
+        return found
+    f = magpie.latest[_log['_ml_traces']]
+    if not f.ok
+        return found
+    if len[f] eq 0
+        return found
+    f = sort[f, 'began', desc = true]
+    ids = tracking.texts_in[f.id]
+    exps = tracking.texts_in[f.experiment]
+    names = tracking.texts_in[f.name]
+    began = tracking.ints_in[f.began]
+    took = tracking.ints_in[f.took]
+    states = tracking.texts_in[f.state]
+    ins = tracking.texts_in[f.request_preview]
+    outs = tracking.texts_in[f.response_preview]
+    asked = tracking.texts_in[f.client_request_id]
+    metas = tracking.texts_in[f.metadata]
+    places = tracking.texts_in[f.location]
+    stages = tracking.texts_in[f.stage]
+    for i in range[len[ids]]
+        found = push[found, TraceInfo[ids[i], exps[i], names[i], began[i], took[i], states[i], ins[i], outs[i], asked[i], metas[i], places[i], stages[i]]]
+    return found
+
+--- the live traces of the experiments named, the newest first
+fn traces_in[experiment_ids]
+    found = []
+    v = _all_traces[]
+    if not v.ok
+        return found
+    for t in v
+        if t.experiment in experiment_ids and t.stage eq 'active'
+            found = push[found, t]
+    return found
+
+fn trace_of[id]
+    found = _no_trace[]
+    v = _all_traces[]
+    if not v.ok
+        return found
+    for t in v
+        if t.id eq id and t.stage eq 'active'
+            found = t
+    return found
+
+--- traces deleted: those named, or those of an experiment begun before a
+--- time (ms); how many went
+fn delete_traces[experiment_id, ids, before]
+    gone = 0
+    for t in traces_in[[experiment_id]]
+        if t.id in ids or (before gt 0 and t.began lt before)
+            t.stage = 'deleted'
+            w = _put_trace[t]
+            gone = gone + 1
+    return gone
+
+--- a trace's state and ending set, as the client's end call says
+fn end_trace[id, state, took, response]
+    t = trace_of[id]
+    if t.id eq ''
+        return error['no trace with id \'`id`\'', 'missing']
+    t.state = state
+    t.took = took
+    if response ne ''
+        t.response_preview = preview[response]
+    w = _put_trace[t]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return t
+
+--- ------------------------------------------------------------- spans
+
+--- a value of a span's attributes: MLflow writes each as JSON text
+fn _attribute[attrs, key]
+    v = attrs[key]
+    if not v.ok
+        return ''
+    return '`v`'
+
+--- a JSON text read back to the text it holds, if it holds one
+fn _unquoted[t]
+    if starts[t, '"']
+        j = json[t]
+        if j.ok
+            return '`j`'
+    return t
+
+fn _text_or[v, default]
+    if not v.ok
+        return default
+    return '`v`'
+
+fn _int_or[v]
+    if not v.ok
+        return 0
+    n = int[v]
+    if not n.ok
+        return 0
+    return workspace.small[n]
+
+--- a trace's spans in tree order (each after its parent, siblings by
+--- start), each with its depth; a span whose parent is not in the file
+--- is a root
+fn spans_of[id]
+    found = []
+    t = trace_of[id]
+    if t.id eq ''
+        return found
+    body = tracking.file_text[t.location, 'traces.json']
+    if body eq ''
+        return found
+    return spans_in[body]
+
+fn spans_in[body]
+    found = []
+    j = json[body]
+    if not j.ok
+        return found
+    ss = j.spans
+    if not ss.ok
+        return found
+    flat = []
+    for s in ss
+        attrs = s.attributes
+        span_type = ''
+        inputs = ''
+        outputs = ''
+        shown = '{}'
+        if attrs.ok
+            span_type = _unquoted[_attribute[attrs, 'mlflow.spanType']]
+            inputs = _attribute[attrs, 'mlflow.spanInputs']
+            outputs = _attribute[attrs, 'mlflow.spanOutputs']
+            e = encode[attrs]
+            if e.ok
+                shown = e
+        st = s.status
+        code = 'STATUS_CODE_UNSET'
+        said = ''
+        if st.ok
+            code = _text_or[st.code, 'STATUS_CODE_UNSET']
+            said = _text_or[st.message, '']
+        flat = push[flat, SpanRow[_text_or[s.span_id, ''], _text_or[s.parent_span_id, ''], _text_or[s.name, ''], span_type, _text_or[s.kind, ''], _int_or[s.start_time_unix_nano], _int_or[s.end_time_unix_nano], inputs, outputs, code, said, shown, 0]]
+    ids = for s in flat
+        s.id
+    pending = []
+    roots = []
+    for i in range[len[flat]]
+        if flat[i].parent eq '' or flat[i].parent not in ids
+            roots = push[roots, i]
+    roots = _by_start[roots, flat]
+    for k in range[len[roots]]
+        pending = push[pending, roots[len[roots] - 1 - k]]
+    depths = for s in flat
+        0
+    seen = []
+    while len[pending] gt 0
+        i = pending[len[pending] - 1]
+        pending = slice[pending, 0, len[pending] - 1]
+        if i not in seen
+            seen = push[seen, i]
+            row = flat[i]
+            row.depth = depths[i]
+            found = push[found, row]
+            kids = []
+            for c in range[len[flat]]
+                if flat[c].parent eq row.id and c not in seen
+                    kids = push[kids, c]
+            kids = _by_start[kids, flat]
+            for k in range[len[kids]]
+                c = kids[len[kids] - 1 - k]
+                depths[c] = depths[i] + 1
+                pending = push[pending, c]
+    return found
+
+--- positions ordered by their spans' start
+fn _by_start[positions, flat]
+    if len[positions] lte 1
+        return positions
+    starts_at = for p in positions
+        flat[p].began
+    f = frame.new[i = positions, at = starts_at]
+    f = sort[f, ['at', 'i']]
+    return tracking.ints_in[f.i]
+
+--- a span written in MLflow's form: every attribute JSON text
+fn _span_json[trace_b64, s]
+    parent = 'null'
+    if s.parent ne ''
+        parent = tracking.quoted[s.parent]
+    attrs = '{"mlflow.spanType": `tracking.quoted[tracking.quoted[s.span_type]]`, "mlflow.spanInputs": `tracking.quoted[s.inputs]`, "mlflow.spanOutputs": `tracking.quoted[s.outputs]`}'
+    status = '{"code": `tracking.quoted[s.status]`, "message": `tracking.quoted[s.message]`}'
+    return '{"trace_id": `tracking.quoted[trace_b64]`, "span_id": `tracking.quoted[s.id]`, "parent_span_id": `parent`, "name": `tracking.quoted[s.name]`, "kind": "SPAN_KIND_INTERNAL", "start_time_unix_nano": `s.began`, "end_time_unix_nano": `s.ended`, "events": [], "status": `status`, "attributes": `attrs`, "links": []}'
+
+--- a trace's spans written to its folder
+fn write_spans[t, spans]
+    b64 = sx.base64[sx.random[16]]
+    pieces = for s in spans
+        _span_json[b64, s]
+    joined = join[pieces, ', ']
+    return tracking.write_file[t.location, 'traces.json', '{"spans": [`joined`]}']
+
+--- ------------------------------------------------------- assessments
+
+fn _put_assessment[a, live]
+    return magpie.batch[_log['_ml_assessments'], frame.new[trace_id = [a.trace_id], id = [a.id], name = [a.name], assessment_type = [a.assessment_type], source_type = [a.source_type], source_id = [a.source_id], value = [a.value], rationale = [a.rationale], span = [a.span], created = [a.created], live = [live]], by = ['trace_id', 'id']]
+
+--- feedback or an expectation given on a trace: the value is JSON text
+fn assess[trace, name, assessment_type, value, source_type, source_id, rationale, span]
+    t = trace_of[trace]
+    if t.id eq ''
+        return error['no trace with id \'`trace`\'', 'missing']
+    if trim[name] eq ''
+        return error['an assessment needs a name', 'invalid']
+    if assessment_type not in ['feedback', 'expectation']
+        return error['an assessment is feedback or an expectation, not \'`assessment_type`\'', 'invalid']
+    j = json[value]
+    if not j.ok
+        return error['an assessment\'s value is JSON: \'`value`\'', 'invalid']
+    who = source_type
+    if who eq ''
+        who = 'HUMAN'
+    a = Assessment[trace, 'a-`tracking.new_id[]`', trim[name], assessment_type, who, source_id, value, rationale, span, tracking.clock[], true]
+    w = _put_assessment[a, true]
+    if not w.ok
+        return error[w.reason, 'invalid']
+    return a
+
+fn assessments_of[trace]
+    found = []
+    v = _assessments_of[trace]
+    if not v.ok
+        return found
+    return v
+
+fn _assessments_of[trace]
+    found = []
+    if _none_in[_log['_ml_assessments']]
+        return found
+    f = magpie.latest[_log['_ml_assessments']]
+    if not f.ok
+        return found
+    mine = f[f.trace_id eq trace]
+    if not mine.ok
+        return found
+    if len[mine] eq 0
+        return found
+    mine = sort[mine, 'created']
+    ids = tracking.texts_in[mine.id]
+    names = tracking.texts_in[mine.name]
+    sorts = tracking.texts_in[mine.assessment_type]
+    who = tracking.texts_in[mine.source_type]
+    whose = tracking.texts_in[mine.source_id]
+    vals = tracking.texts_in[mine.value]
+    whys = tracking.texts_in[mine.rationale]
+    spans = tracking.texts_in[mine.span]
+    made = tracking.ints_in[mine.created]
+    lives = tracking.truths_in[mine.live]
+    for i in range[len[ids]]
+        if lives[i]
+            found = push[found, Assessment[trace, ids[i], names[i], sorts[i], who[i], whose[i], vals[i], whys[i], spans[i], made[i], true]]
+    return found
+
+fn delete_assessment[trace, id]
+    for a in assessments_of[trace]
+        if a.id eq id
+            w = _put_assessment[a, false]
+            return id
+    return error['no assessment \'`id`\' on trace \'`trace`\'', 'missing']
+
+--- -------------------------------------------- tracing from a program
+
+--- a trace begun: its root span named, what came in kept; spans are
+--- added with `span`, and `finish` writes it all
+fn begin[experiment_name, name, inputs]
+    tracking.ready[]
+    e = tracking.experiment_named[experiment_name]
+    if e.id eq ''
+        made = tracking.create_experiment[experiment_name, '']
+        if not made.ok
+            return made
+        e = tracking.experiment[made]
+    at = tracking.clock[]
+    id = new_trace_id[]
+    info = TraceInfo[id, e.id, name, at, 0, 'IN_PROGRESS', preview[inputs], '', '', '{}', _trace_place[e.id, id], 'active']
+    root_span = SpanRow[_span_id[], '', name, 'CHAIN', 'SPAN_KIND_INTERNAL', _nanos[], 0, inputs, '', 'STATUS_CODE_UNSET', '', '{}', 0]
+    return Trace[info, [root_span]]
+
+fn _span_id[]
+    return sx.base64[sx.random[8]]
+
+fn _nanos[]
+    return workspace.small[int[float[now[]] * 1000000.0]] * 1000
+
+--- the trace's root span's id
+fn root_of[tr]
+    return tr.spans[0].id
+
+--- the id of the span added last
+fn last_span[tr]
+    return tr.spans[len[tr.spans] - 1].id
+
+--- a span added under a parent (its id), done now: what came in, what
+--- went out, and when it began (`tracking.clock[]` read before the work)
+fn span[tr, parent, name, span_type, inputs, outputs, began_ms]
+    ended = _nanos[]
+    began = began_ms * 1000000
+    if began_ms lte 0 or began gt ended
+        began = ended
+    s = SpanRow[_span_id[], parent, name, span_type, 'SPAN_KIND_INTERNAL', began, ended, inputs, outputs, 'STATUS_CODE_OK', '', '{}', 0]
+    held = tr
+    held.spans = push[held.spans, s]
+    return held
+
+--- a trace finished: the root span closed with what went out, the spans
+--- written, the trace recorded; its id
+fn finish[tr, outputs, state]
+    said = state
+    if said eq ''
+        said = 'OK'
+    ended = _nanos[]
+    spans = tr.spans
+    first = spans[0]
+    first.ended = ended
+    first.outputs = outputs
+    first.status = 'STATUS_CODE_OK'
+    if said eq 'ERROR'
+        first.status = 'STATUS_CODE_ERROR'
+    spans[0] = first
+    info = tr.info
+    info.state = said
+    info.took = (ended - first.began) / 1000000
+    info.response_preview = preview[outputs]
+    t = record_trace[info]
+    if not t.ok
+        return t
+    w = write_spans[t, spans]
+    if not w.ok
+        return w
+    return t.id
+
+test traces_spans_and_feedback[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    tracking.ready[]
+    tr = begin['rag', 'answer', '{"q": "why"}']
+    t0 = tracking.clock[]
+    tr = span[tr, root_of[tr], 'retrieve', 'RETRIEVER', '{"q": "why"}', '["doc 1"]', t0]
+    tr = span[tr, last_span[tr], 'rank', 'RERANKER', '["doc 1"]', '["doc 1"]', t0]
+    t1 = tracking.clock[]
+    tr = span[tr, root_of[tr], 'generate', 'LLM', 'x\u0000y', 'because', t1]
+    id = finish[tr, '"because"', '']
+    assert[starts[id, 'tr-']]
+    t = trace_of[id]
+    assert[t.state eq 'OK']
+    assert[t.response_preview eq '"because"']
+    assert[tracking.tag_value['trace', id, '', 'mlflow.traceName'] eq 'answer']
+    ss = spans_of[id]
+    assert[len[ss] eq 4]
+    names = for s in ss
+        s.name
+    assert[names eq ['answer', 'retrieve', 'rank', 'generate']]
+    depths = for s in ss
+        s.depth
+    assert[depths eq [0, 1, 2, 1]]
+    assert[ss[1].span_type eq 'RETRIEVER']
+    assert[ss[3].inputs eq 'x\u0000y']
+    shuffled = spans_in['{"spans": [{"span_id": "b", "parent_span_id": "a", "name": "child", "start_time_unix_nano": 5}, {"span_id": "a", "parent_span_id": null, "name": "root", "start_time_unix_nano": 1}]}']
+    order = for s in shuffled
+        s.name
+    assert[order eq ['root', 'child']]
+    a = assess[id, 'correct', 'feedback', 'true', 'HUMAN', 'ada', 'it cites the doc', '']
+    assert[a.ok]
+    assert[assess[id, 'x', 'feedback', 'not json', '', '', '', ''].kind eq 'invalid']
+    assert[len[assessments_of[id]] eq 1]
+    d = delete_assessment[id, a.id]
+    assert[len[assessments_of[id]] eq 0]
+    e = tracking.experiment_named['rag']
+    assert[e.updated gte t.began]
+    assert[len[traces_in[[e.id]]] eq 1]
+    n = delete_traces[e.id, [id], 0]
+    assert[n eq 1]
+    assert[len[traces_in[[e.id]]] eq 0]

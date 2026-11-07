@@ -1,0 +1,514 @@
+--- Models: MLflow's model registry as pages of the workbench. The list
+--- holds the registered models and, on their own tab, the prompts; a
+--- model's page lists its versions with their stages and aliases, and the
+--- version opened shows where its files lie, its MLmodel, and a box that
+--- asks it for predictions — the request MLflow's scoring server takes,
+--- answered by the version's own predict.co. A prompt's version shows its
+--- template and fills it.
+use web, ui
+use myna.workspace
+use myna.workbench
+use myna.tracking
+use myna.registry
+use myna.serving
+use myna.experiments
+
+--- the list
+models_tab = 'models'
+name_filter = ''
+creating = false
+new_model_name = ''
+new_model_note = ''
+
+--- a model's page: the model the address names (`/models/<name>`) and the
+--- version opened (`?version=2`, 0 for none)
+model_name = ''
+version = 0
+editing_about = false
+about_text = ''
+alias_text = ''
+try_text = ''
+tried = ''
+tried_ok = true
+asked = 0
+
+--- ------------------------------------------------------------ reading
+
+derive all_models
+    seen = asked
+    return registry.models_all[]
+
+derive prompt_names
+    out = []
+    for m in all_models
+        if registry.is_prompt[m]
+            out = push[out, m.name]
+    return out
+
+--- the models (or the prompts) the list shows: their names holding the
+--- filter, any case
+derive listed
+    out = []
+    want = lower[trim[name_filter]]
+    for m in all_models
+        prompt = m.name in prompt_names
+        if prompt eq (models_tab eq 'prompts') and (want eq '' or want in lower[m.name])
+            out = push[out, m]
+    return out
+
+--- each listed model's newest version and its aliases, by the model's name
+derive newest
+    out = for m in listed
+        _newest_of[m.name]
+    return out
+
+fn _newest_of[name]
+    vs = registry.versions_of[name]
+    if len[vs] eq 0
+        return 0
+    return vs[0].version
+
+derive alias_words
+    out = for m in listed
+        _alias_words_of[m.name]
+    return out
+
+fn _alias_words_of[name]
+    words = for a in registry.aliases_of[name]
+        '@`a.alias` → v`a.version`'
+    return join[words, '  ']
+
+derive the_model
+    seen = asked
+    return registry.model_named[model_name]
+
+derive model_found
+    return the_model.id ne ''
+
+derive is_prompt
+    return model_found and model_name in prompt_names
+
+derive versions
+    seen = asked
+    return registry.versions_of[model_name]
+
+derive aliases
+    seen = asked
+    return registry.aliases_of[model_name]
+
+derive opened
+    for v in versions
+        if v.version eq version
+            return v
+    return registry.version_of['', 0]
+
+derive opened_aliases
+    out = []
+    for a in aliases
+        if a.version eq version
+            out = push[out, a.alias]
+    return out
+
+--- the opened version's folder, its MLmodel, and whether it is a Crow
+--- model the try box can ask
+derive folder
+    if version eq 0 or is_prompt
+        return ''
+    f = registry.model_folder[model_name, '`version`']
+    if not f.ok
+        return ''
+    return f
+
+derive mlmodel
+    if folder eq ''
+        return ''
+    t = read['`folder`/MLmodel']
+    if not t.ok
+        return ''
+    return t
+
+derive servable
+    if folder eq ''
+        return false
+    return serving.is_crow_model[folder]
+
+--- the request the try box starts from: one record of the signature's
+--- input columns, each 0
+derive try_example
+    names = _signature_names[mlmodel]
+    pairs = for n in names
+        '"`n`": 0'
+    return '{"dataframe_records": [{`join[pairs, \', \']`}]}'
+
+fn _signature_names[given]
+    names = []
+    for line in split[given, '\n']
+        if starts[trim[line], 'inputs:']
+            for piece in split[line, '"name": "']
+                if piece ne '' and not ('inputs:' in piece)
+                    names = push[names, split[piece, '"'][0]]
+    return names
+
+derive template
+    if not is_prompt or version eq 0
+        return ''
+    return registry.prompt_text[model_name, version]
+
+derive variables
+    return registry.prompt_variables[template]
+
+--- ------------------------------------------------------------ doing
+
+fn show_list_tab[name]
+    models_tab = name
+
+fn ask_model[]
+    new_model_name = ''
+    new_model_note = ''
+    creating = true
+
+fn close_creating[]
+    creating = false
+
+fn create_model_now[]
+    m = registry.create_model[new_model_name, new_model_note]
+    if not m.ok
+        notice['The model was not registered: `m.reason`']
+        return
+    creating = false
+    asked = asked + 1
+    notice['Registered `m.name`: open it from the list for its versions']
+
+fn open_version[n]
+    version = n
+    tried = ''
+    try_text = ''
+    alias_text = ''
+
+fn close_version[]
+    version = 0
+
+fn edit_about[]
+    about_text = the_model.description
+    editing_about = true
+
+fn save_about[]
+    d = registry.describe_model[model_name, about_text]
+    editing_about = false
+    asked = asked + 1
+    if not d.ok
+        notice['The description was not kept: `d.reason`']
+
+fn cancel_about[]
+    editing_about = false
+
+fn delete_shown_model[]
+    d = registry.delete_model[model_name]
+    asked = asked + 1
+    if not d.ok
+        notice['The model was not deleted: `d.reason`']
+
+fn move_to[stage]
+    t = registry.transition[model_name, version, stage, false]
+    asked = asked + 1
+    if not t.ok
+        notice['The version was not moved: `t.reason`']
+
+fn add_alias[]
+    a = registry.set_alias[model_name, alias_text, version]
+    asked = asked + 1
+    if not a.ok
+        notice['The alias was not set: `a.reason`']
+        return
+    alias_text = ''
+
+fn drop_alias[name]
+    d = registry.delete_alias[model_name, name]
+    asked = asked + 1
+    if not d.ok
+        notice['The alias was not removed: `d.reason`']
+
+fn delete_opened[]
+    d = registry.delete_version[model_name, version]
+    asked = asked + 1
+    if not d.ok
+        notice['The version was not deleted: `d.reason`']
+        return
+    version = 0
+
+--- the try box asked: the version's predictions for the request, or why
+--- not
+fn try_it[]
+    body = try_text
+    if trim[body] eq ''
+        body = try_example
+    s = serving.score[model_name, '`version`', body]
+    if not s.ok
+        tried = s.reason
+        tried_ok = false
+        return
+    tried = s
+    tried_ok = true
+
+--- a prompt filled: the try box holds the variables as JSON
+fn fill_prompt[]
+    j = json[try_text]
+    if not j.ok
+        tried = 'the values are no JSON object: `j.reason`'
+        tried_ok = false
+        return
+    filled = map[]
+    for name in variables
+        v = j[name]
+        if v.ok
+            filled[name] = _plain_text[encode[v]]
+    tried = registry.format_prompt[template, filled]
+    tried_ok = true
+
+--- a JSON value as text: a string without its quotes
+fn _plain_text[t]
+    if starts[t, '"']
+        j = json[t]
+        if j.ok
+            return '`j`'
+    return t
+
+--- ------------------------------------------------------------ drawing
+
+fn _when[ms]
+    return experiments.when_ms[ms]
+
+view _list_tab[name, label]
+    if models_tab eq name
+        return button[label, click = show_list_tab[name], class = 'boardtab on']
+    return button[label, click = show_list_tab[name], class = 'boardtab']
+
+view _model_line[m, newest_version, words]
+    latest = '—'
+    if newest_version gt 0
+        latest = 'v`newest_version`'
+    return tr[
+        td[a[m.name, href = '/models/`m.name`', class = 'runname']],
+        td[p[latest, size = 'xs', font = 'mono']],
+        td[p[words, size = 'xs', font = 'mono', color = 'accent']],
+        td[p[_when[m.updated], size = 'xs', color = 'muted']],
+        td[p[m.description, size = 'xs']]]
+
+view _list_body[]
+    lines = for i in range[len[listed]]
+        _model_line[listed[i], newest[i], alias_words[i]]
+    empty_words = 'No registered models yet. A run\'s model is registered from a notebook with registry.register, or by MLflow\'s client with mlflow.register_model.'
+    if models_tab eq 'prompts'
+        empty_words = 'No prompts yet. A prompt is registered with registry.register_prompt, or by MLflow\'s client with mlflow.genai.register_prompt.'
+    shown = p[empty_words, color = 'muted', size = 's']
+    if len[listed] gt 0
+        shown = table[thead[tr[th['Name'], th['Latest'], th['Aliases'], th['Updated'], th['Description']]], tbody[lines]]
+    return stack[
+        row[_list_tab['models', 'Models'], _list_tab['prompts', 'Prompts'], gap = 'none', wrap = true, class = 'boardtabs'],
+        row[field['Filter by name', name_filter, type = 'text'], gap = 's', align = 'end'],
+        shown,
+        gap = 'm']
+
+view _creating[]
+    return modal[
+        stack[
+            h2['Register a model'],
+            form[field['Name', new_model_name, type = 'text'], field['Description', new_model_note, type = 'text'], button['Register', class = 'primary'], submit = create_model_now],
+            button['Cancel', click = close_creating, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = creating]
+
+view render[]
+    return stack[
+        workbench.screen['Models', 'Models', button['Register a model', click = ask_model], stack[h1['Models'], _list_body[], gap = 'm']],
+        _creating[]]
+
+--- ------------------------------------------------------- a model's page
+
+view _stage_of[stage]
+    if stage eq 'Production'
+        return p[stage, size = 'xs', color = 'up']
+    if stage eq 'Staging'
+        return p[stage, size = 'xs', color = 'accent']
+    return p[stage, size = 'xs', color = 'muted']
+
+fn _alias_text_of[v, every]
+    words = []
+    for a in every
+        if a.version eq v
+            words = push[words, '@`a.alias`']
+    return join[words, ' ']
+
+fn _run_of[source, run]
+    if run ne ''
+        return run
+    return ''
+
+view _version_line[v, every, open_now]
+    mark = button['v`v.version`', click = open_version[v.version], class = 'pick']
+    if v.version eq open_now
+        mark = button['v`v.version`', click = close_version, class = 'pick primary']
+    run_cell = p['—', size = 'xs', color = 'muted']
+    if v.run ne ''
+        run_cell = a[slice[v.run, 0, 8], href = '/runs/`v.run`', class = 'runname']
+    return tr[
+        td[mark],
+        td[p[_when[v.created], size = 'xs', color = 'muted']],
+        td[p[_alias_text_of[v.version, every], size = 'xs', font = 'mono', color = 'accent']],
+        td[_stage_of[v.stage]],
+        td[run_cell],
+        td[p[v.description, size = 'xs']]]
+
+view _about_box[]
+    if editing_about
+        return stack[
+            stack[field['Description', about_text, lines = 3], class = 'wide'],
+            row[button['Save', click = save_about, class = 'primary'], button['Cancel', click = cancel_about], gap = 's'],
+            gap = 'xs']
+    shown = p[the_model.description, size = 's']
+    if the_model.description eq ''
+        shown = p['No description', size = 's', color = 'muted']
+    return row[shown, button['Edit', click = edit_about], gap = 's', align = 'center', wrap = true]
+
+view _stage_button[stage, now_at]
+    if stage eq now_at
+        return button[stage, click = move_to[stage], class = 'primary']
+    return button[stage, click = move_to[stage]]
+
+view _alias_chip[name]
+    return row[p['@`name`', size = 'xs', font = 'mono', color = 'accent'], button['×', click = drop_alias[name], tip = 'Remove @`name`', class = 'pick'], gap = 'xs', align = 'center']
+
+view _tried_box[]
+    if tried eq ''
+        return p['']
+    if tried_ok
+        return stack[p['Answer', size = 'xs', color = 'muted'], pre[tried], gap = 'xs', class = 'spanbox']
+    return stack[p['Not answered', size = 'xs', color = 'down'], pre[tried], gap = 'xs', class = 'spanbox']
+
+fn _versions_count[n]
+    if n eq 1
+        return '1 version'
+    return '`n` versions'
+
+view _try_model[]
+    if not servable
+        return p['This version holds no Crow model (an MLmodel with a crow flavor and a predict.co), so it cannot be asked here.', size = 's', color = 'muted']
+    return stack[
+        p['POST /serve/`model_name`/`version`/invocations — or by an alias: /serve/`model_name`/@alias/invocations', size = 'xs', font = 'mono', color = 'muted'],
+        stack[field['Input (JSON)', try_text, lines = 4], class = 'wide mono'],
+        row[button['Predict', click = try_it, class = 'primary'], p['Empty asks one row of the signature\'s columns: `try_example`', size = 'xs', color = 'muted'], gap = 's', align = 'center', wrap = true],
+        _tried_box[],
+        gap = 'xs']
+
+view _try_prompt[]
+    names = join[variables, ', ']
+    return stack[
+        p['Template', size = 'xs', color = 'muted'],
+        pre[template],
+        p['Variables: `names`', size = 'xs', color = 'muted'],
+        stack[field['Values (JSON, {"name": "value"})', try_text, lines = 3], class = 'wide mono'],
+        row[button['Fill', click = fill_prompt, class = 'primary'], gap = 's'],
+        _tried_box[],
+        gap = 'xs', class = 'spanbox']
+
+view _version_panel[]
+    if version eq 0
+        return p['Open a version for its stage, aliases, files and a try.', size = 's', color = 'muted']
+    if opened.version eq 0
+        return p['No version `version` of this model.', size = 's', color = 'muted']
+    chips = for name in opened_aliases
+        _alias_chip[name]
+    body = _try_model[]
+    if is_prompt
+        body = _try_prompt[]
+    files = p['']
+    if mlmodel ne ''
+        files = stack[p['MLmodel', size = 'xs', color = 'muted'], pre[mlmodel], gap = 'xs', class = 'spanbox']
+    return stack[
+        row[h2['Version `version`'], button['Delete version', click = delete_opened, confirm = 'Delete version `version` of `model_name`? Its aliases go with it.'], justify = 'between', align = 'center'],
+        row[p['Stage', size = 'xs', color = 'muted'], _stage_button['None', opened.stage], _stage_button['Staging', opened.stage], _stage_button['Production', opened.stage], _stage_button['Archived', opened.stage], gap = 's', align = 'center', wrap = true],
+        row[p['Aliases', size = 'xs', color = 'muted'], chips, form[field['New alias', alias_text, type = 'text'], button['Set', class = 'primary'], submit = add_alias], gap = 's', align = 'center', wrap = true],
+        stack[p['Source', size = 'xs', color = 'muted'], p[opened.source, size = 'xs', font = 'mono'], gap = 'none'],
+        files,
+        body,
+        gap = 'm', pad = 'm', surface = 'card', border = true]
+
+view _model_body[]
+    if not model_found
+        return stack[h1['No such model'], p['No registered model is named `model_name`.', color = 'muted'], a['Models', href = '/models'], gap = 's']
+    lines = for v in versions
+        _version_line[v, aliases, version]
+    table_of = p['No versions yet.', size = 's', color = 'muted']
+    if len[versions] gt 0
+        table_of = table[thead[tr[th['Version'], th['Registered'], th['Aliases'], th['Stage'], th['Run'], th['Description']]], tbody[lines]]
+    kind = 'registered model'
+    if is_prompt
+        kind = 'prompt'
+    return stack[
+        row[
+            stack[h1[model_name], p['`kind` · `_versions_count[len[versions]]`', size = 'xs', color = 'muted'], gap = 'xs'],
+            button['Delete', click = delete_shown_model, confirm = 'Delete `model_name` with every version and alias?'],
+            justify = 'between', align = 'start'],
+        _about_box[],
+        table_of,
+        _version_panel[],
+        gap = 'm']
+
+view model_page[]
+    return workbench.screen['Models', 'Models / `model_name`', a['All models', href = '/models', class = 'button'], _model_body[]]
+
+--- the list and a model's page: a model registered from a run's Crow
+--- model, a version opened, moved, aliased and asked for predictions; a
+--- prompt filled
+test models_list_and_a_model_page[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.home[]]
+    workspace.ready[]
+    tracking.ready[]
+    code = 'fn predict[rows]\n    out = []\n    i = 0\n    while i lt len[rows]\n        r = rows[i]\n        i = i + 1\n        out = push[out, 3.0 * float[\'\`r.x\`\']]\n    return out\n'
+    one = tracking.start_run['houses', 'triple']
+    saved = serving.save_model[one, 'model', code, '', '', ['x:double'], [':double']]
+    v = registry.register[one, 'model', 'tripler']
+    p = registry.register_prompt['greeting', 'Hello {{ name }}, welcome to {{place}}', 'first']
+    a = app[render, wide = true]
+    assert['tripler' in html[a]]
+    assert[not ('greeting' in html[a])]
+    click[a, show_list_tab['prompts']]
+    assert['greeting' in html[a]]
+    click[a, show_list_tab['models']]
+    change[a, 'name_filter', 'TRIP']
+    assert[len[a.listed] eq 1]
+    change[a, 'name_filter', 'zzz']
+    assert[len[a.listed] eq 0]
+    m = app[model_page, wide = true]
+    change[m, 'model_name', 'tripler']
+    assert['v1' in html[m]]
+    click[m, open_version[1]]
+    assert[m.servable]
+    assert[m.try_example eq '{"dataframe_records": [{"x": 0}]}']
+    change[m, 'try_text', '{"inputs": [{"x": 2}]}']
+    click[m, try_it]
+    assert[m.tried eq '{"predictions": [6.0]}']
+    click[m, move_to['Production']]
+    assert[m.opened.stage eq 'Production']
+    change[m, 'alias_text', 'champion']
+    click[m, add_alias]
+    assert[m.opened_aliases eq ['champion']]
+    change[m, 'alias_text', 'latest']
+    click[m, add_alias]
+    assert[m.opened_aliases eq ['champion']]
+    click[m, drop_alias['champion']]
+    assert[len[m.opened_aliases] eq 0]
+    click[m, edit_about]
+    change[m, 'about_text', 'three times x']
+    click[m, save_about]
+    assert[m.the_model.description eq 'three times x']
+    change[m, 'model_name', 'greeting']
+    click[m, open_version[1]]
+    assert[m.is_prompt and m.variables eq ['name', 'place']]
+    change[m, 'try_text', '{"name": "Ada", "place": "Myna"}']
+    click[m, fill_prompt]
+    assert[m.tried eq 'Hello Ada, welcome to Myna']
+    change[m, 'model_name', 'nobody']
+    assert['No such model' in html[m]]
+    gone = rm[workspace.home[]]
