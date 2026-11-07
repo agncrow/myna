@@ -12,8 +12,7 @@ MLflow's own client.
 **The article and the Myna Book:** <https://agncrow.github.io/myna/>
 (the book's chapters are `docs/book/src`, rendered by
 `docs/book/site.co`; `.github/workflows/pages.yml` publishes both on
-every push to main that touches them. The repository is private, its
-site public).
+every push to main that touches them).
 
 Myna needs Crow 0.8.0 or later and installs Magpie as any dependency.
 From this folder:

@@ -1,9 +1,7 @@
 # The article introducing Myna (site/index.html) and the Myna Book
 # (docs/book, rendered by docs/book/site.co), published on GitHub Pages —
 # the article at https://agncrow.github.io/myna/, the book under it at
-# /book/ — on every push to main that touches either or the icons. The
-# repository is private; its Pages site is public (the organization's plan
-# serves Pages from a private repository).
+# /book/ — on every push to main that touches either or the icons.
 #
 # No step runs a JavaScript action, so the workflow needs no Node.js: the
 # commit is fetched with git, the book rendered by the released crow (the

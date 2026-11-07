@@ -1,9 +1,8 @@
 --- The Myna Book, rendered by Crow as Crow's and Magpie's books are:
 --- Markdown chapters in (docs/book/src), a static site out
 --- (docs/book/crow-site), published under the article at
---- agncrow.github.io/myna/book/ by .github/workflows/pages.yml (the
---- repository is private, its Pages site public). Run from the
---- repository's root:
+--- agncrow.github.io/myna/book/ by .github/workflows/pages.yml. Run from
+--- the repository's root:
 ---
 ---   crow run -i docs/book/site.co    --- writes every page
 ---   crow test docs/book/site.co      --- the page layout, no browser
@@ -28,7 +27,7 @@ view chapter[title, body, nav, pages, up, version]
             row[
                 input[class = 'doc-search', type = 'search', placeholder = 'Search  /', hidden_below = 'phone'],
                 a['Article', href = '`up`../index.html'],
-                a['Magpie', href = 'https://agncrow.github.io/magpie/'],
+                a['GitHub', href = 'https://github.com/agncrow/myna'],
                 gap = 'm', align = 'center', class = 'links', hidden_below = 'phone'
             ],
             gap = 'm', align = 'center', justify = 'between', class = 'doc-top'

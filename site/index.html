@@ -143,7 +143,7 @@ figure.pair figcaption { grid-column: 1 / -1; }
   <div class="eyebrow">Data systems · November 2026</div>
   <h1>Introducing Myna: a data and machine-learning workbench written in Crow</h1>
   <p class="subtitle">Notebooks, queries, dashboards, experiments and models over one folder of Magpie logs</p>
-  <p class="links"><a href="book/">Read the book</a><span aria-hidden="true">·</span><a href="https://agncrow.github.io/magpie/">Magpie</a><span aria-hidden="true">·</span><a href="https://github.com/agncrow/crow">Crow</a></p>
+  <p class="links"><a href="book/">Read the book</a><span aria-hidden="true">·</span><a href="https://github.com/agncrow/myna">GitHub</a></p>
   <p class="lede">A team that works with data usually keeps its work in several places: a catalog of tables, notebooks, saved queries and dashboards, a tracking server for experiments, a registry of models, and a scheduler that runs it all.</p>
   <p class="intro">Each of those keeps its own records in its own store, and the team keeps them in step.</p>
   <p class="intro key"><b>Myna keeps all of it in one folder of Magpie logs.</b> The notebooks' tables, the saved queries, the dashboards' tiles, every run of every experiment and every version of every model are rows of logs side by side. Every page is derived from those logs.</p>
@@ -307,7 +307,7 @@ done = tracking.end_run[run, 'FINISHED']</code></pre>
 <section class="prose" id="availability">
 <h3>Availability</h3>
 <p>Crow is open source at <a href="https://github.com/agncrow/crow">github.com/agncrow/crow</a>. Myna is built on <a href="https://agncrow.github.io/magpie/">Magpie</a>.</p>
-<p>Myna's source is private for now. Its license is the Business Source License 1.1, as Magpie's is: free for development, testing and non-commercial use, and for commercial production on one machine per application, with each version becoming Apache-2.0 four years after it is published. The <a href="book/licensing.html">licensing page</a> says this in plain words.</p>
+<p>Myna is a Crow program at <a href="https://github.com/agncrow/myna">github.com/agncrow/myna</a>, source-available under the Business Source License 1.1, as Magpie is: free for development, testing and non-commercial use, and for commercial production on one machine per application, with each version becoming Apache-2.0 four years after it is published. The <a href="book/licensing.html">licensing page</a> says this in plain words.</p>
 <p>The Myna book walks through every page, the calls a notebook makes, MLflow's HTTP API, serving and evaluation, and the tests: <a href="book/">the book</a>.</p>
 <div class="closing">
 <p>Myna's idea is that a team's data work can live in one folder: tables, questions, dashboards, experiments and models side by side as logs, with every page derived from them.</p>

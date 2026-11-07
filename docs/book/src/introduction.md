@@ -41,5 +41,5 @@ talks.
 ## Status
 
 Every page but the model to ask is built, and that page says so. Myna's
-repository is private for now; this book and the article above it are
-public.
+source is at [github.com/agncrow/myna](https://github.com/agncrow/myna),
+under the Business Source License 1.1 ([Licensing](licensing.md)).
