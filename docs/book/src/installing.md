@@ -1,19 +1,13 @@
 # Installing and Running Myna
 
-Myna needs Crow from its main branch, at commit 8a96a3a or later:
-building Myna found 31 bugs in Crow, and their fixes came after the
-0.8.0 release. (Built from main, `crow --version` still says 0.8.0 until
-the next release.) Until then, build Crow from main. The installer fetches a C toolchain and
-Rust if they are missing:
+Myna needs Crow 0.8.2 or later: building Myna found 31 bugs in Crow,
+and 0.8.2 is the release that fixes them. Crow installs in one line,
+fetching a C toolchain and Rust if they are missing:
 
 ```text
-git clone https://github.com/agncrow/crow
-cd crow
-./install.sh --source
+curl -fsSL https://raw.githubusercontent.com/agncrow/crow/main/install.sh | bash
 ```
 
-From a release on, Crow installs in one line instead
-(`curl -fsSL https://raw.githubusercontent.com/agncrow/crow/main/install.sh | bash`);
 [the Crow Book](https://agncrow.github.io/crow/) says more. Then get
 Myna, install Magpie (its one dependency, pinned by `crow.lock`) and
 start it:

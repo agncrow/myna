@@ -20,7 +20,7 @@ concurrency:
   group: pages
   cancel-in-progress: true
 env:
-  CROW_VERSION: "0.8.0"
+  CROW_VERSION: "0.8.2"
 jobs:
   publish:
     runs-on: ubuntu-22.04
