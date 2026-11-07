@@ -7,7 +7,12 @@ Crow: the catalog, queries, notebooks, dashboards, experiments and
 models, a model to ask and the jobs that run it all, every piece of its
 state a Magpie log. Everything but the model to ask is built, and its
 page says so. Experiments and Models do what MLflow does, and answer
-MLflow's own client: docs/experiments.md.
+MLflow's own client.
+
+**The article and the Myna Book:** <https://agncrow.github.io/myna-site/>
+(the book's chapters are `docs/book/src`, rendered by
+`docs/book/site.co`; `scripts/publish_site.sh` publishes both to the
+public `agncrow/myna-site` repository, while this one stays private).
 
 Myna needs Crow 0.8.0 or later and installs Magpie as any dependency.
 From this folder:
@@ -59,7 +64,7 @@ starts at once.
 - **Models** (`/models`): the registry. A model's versions have
   aliases, stages and tags, and a version can be tried on the page and
   served at `/serve/:model/:ref/invocations`. Prompts have their own
-  tab. All of it is in docs/experiments.md.
+  tab. All of it is in the book's Part II (`docs/book/src`).
 - **Jobs** (`/jobs`): the scheduler, the schedules and every run.
 - **Settings** (`/settings`): the workspace's name, and how long a run may
   take before it is stopped (60 seconds unless set).
@@ -122,6 +127,8 @@ a running Myna.
   `myna/settings.co` are the pages; `myna/soon.co` holds the pages not
   built yet.
 - `scheduler.co` is the scheduler.
+- `docs/book/` is the Myna Book and `site/` the article; `scripts/publish_site.sh`
+  publishes them.
 
 The design, the screens and the plan: the architecture document and the
 design canvas (private for now). The name: the myna, the clever talking

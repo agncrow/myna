@@ -172,9 +172,14 @@ derive axis_names
         out = push[out, 'params.`k`']
     return out
 
+--- (unchosen, x is the first param whose value differs between the runs,
+--- the one marked ●: a param every run shares put every point on one line)
 derive x_name
     if x_key in axis_names
         return x_key
+    for k in param_names
+        if _differs[_values_of[k, compared_params]]
+            return 'params.`k`'
     for k in axis_names
         if starts[k, 'params.']
             return k
@@ -233,6 +238,17 @@ fn _label_of[r]
 fn _values_of[key, every]
     out = for ps in every
         experiments._value_in[ps, key]
+    return out
+
+--- an axis's choices, the one plotted first while none is chosen: the
+--- menu shows its first choice then, and had named another than the chart
+fn _shown_first[names, chosen, shown]
+    if chosen in names or not (shown in names)
+        return names
+    out = [shown]
+    for k in names
+        if k ne shown
+            out = push[out, k]
     return out
 
 fn _differs[cells_of]
@@ -436,11 +452,20 @@ view _run_body[]
             _fact_cell['Source', source],
             _parent_cell[],
             _fact_cell['Lifecycle', r.stage],
-            stack[p['Files', size = 'xs', color = 'muted'], p[r.artifacts, size = 'xs', font = 'mono'], gap = 'none'],
+            stack[p['Files', size = 'xs', color = 'muted'], p[_in_workspace[r.artifacts], size = 'xs', font = 'mono', title = r.artifacts], gap = 'none'],
             columns = 4, gap = 's', pad = 's', surface = 'card', border = true, class = 'runfacts'],
         row[_run_tab_link['overview', 'Overview'], _run_tab_link['metrics', 'Metrics'], _run_tab_link['artifacts', 'Artifacts'], gap = 'none', wrap = true, class = 'boardtabs'],
         _run_tab_body[],
         gap = 'm']
+
+--- a run's folder as the workspace names it (`.mlartifacts/1/<run>/artifacts`):
+--- the whole path, the machine's, wrapped over five lines of the card; it
+--- stays the title, and a folder outside the workspace is shown whole
+fn _in_workspace[path]
+    pieces = split[path, '/.mlartifacts/']
+    if len[pieces] eq 2
+        return '.mlartifacts/`pieces[1]`'
+    return path
 
 fn _where_of[found_run, experiment, r]
     if not found_run
@@ -509,8 +534,8 @@ view _compare_body[]
         stack[
             p['One value against another', weight = 'bold', size = 's'],
             row[
-                stack[p['x', size = 'xs', color = 'muted'], select[axis_names, x_key], gap = 'none'],
-                stack[p['y', size = 'xs', color = 'muted'], select[axis_names, y_key], gap = 'none'],
+                stack[p['x', size = 'xs', color = 'muted'], select[_shown_first[axis_names, x_key, x_name], x_key], gap = 'none'],
+                stack[p['y', size = 'xs', color = 'muted'], select[_shown_first[axis_names, y_key, y_name], y_key], gap = 'none'],
                 gap = 's', wrap = true],
             scatter,
             gap = 's', pad = 'm', surface = 'card', border = true],
@@ -565,9 +590,17 @@ test a_run_and_a_comparison_show_what_was_logged[]
     assert[c.param_names eq ['depth', 'lr']]
     assert['● lr' in html[c]]
     assert[not ('● depth' in html[c])]
-    assert[c.x_name eq 'params.depth' and c.y_name eq 'metrics.loss']
-    change[c, 'x_key', 'params.lr']
-    assert[c.x_name eq 'params.lr']
+    assert[c.x_name eq 'params.lr' and c.y_name eq 'metrics.loss']
+    change[c, 'x_key', 'params.depth']
+    assert[c.x_name eq 'params.depth']
     assert[starts[c.scatter_svg, '<svg']]
     assert['<circle' in c.scatter_svg]
     gone = rm[workspace.home[]]
+
+test an_axis_menu_shows_what_is_plotted_first[]
+    _shown_first[['metrics.rmse', 'params.lr'], '', 'params.lr'] eq ['params.lr', 'metrics.rmse']
+    _shown_first[['metrics.rmse', 'params.lr'], 'metrics.rmse', 'metrics.rmse'] eq ['metrics.rmse', 'params.lr']
+
+test a_runs_folder_is_named_from_the_workspace[]
+    _in_workspace['/home/a/myna/myna_data/.mlartifacts/1/r9/artifacts'] eq '.mlartifacts/1/r9/artifacts'
+    _in_workspace['/data/elsewhere/r9'] eq '/data/elsewhere/r9'

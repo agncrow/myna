@@ -9,6 +9,8 @@ test_data/
 *.csv
 *.txt
 *.json
+# the book's rendered pages (docs/book/site.co writes them)
+docs/book/crow-site/
 # the OS and editors
 .DS_Store
 *.swp
