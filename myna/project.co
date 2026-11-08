@@ -1,0 +1,281 @@
+--- Projects: the Crow project Myna has open — its folder, its workspace,
+--- its programs (compiled or interpreted) and its dashboards — and the
+--- projects opened before. A folder is opened by its whole path, a new
+--- project is made with a Hello dashboard, and Compile builds every
+--- program the manifest names into the project's bin/ in the background,
+--- so Run on the Dashboards page runs the binaries (myna/projects.co).
+use web, ui, frame
+use myna.workspace
+use myna.workbench
+use myna.access
+use myna.projects
+
+--- the folder typed to open
+open_path = ''
+--- the New project dialog
+making = false
+new_path = ''
+new_name = ''
+--- moved by every change, so the lists read again
+changed = 0
+
+--- the open project's folder, '' where none is open
+derive here
+    seen = changed
+    tick = now[]
+    return projects.current[]
+
+derive known
+    seen = changed
+    return projects.projects[]
+
+derive opened
+    seen = changed
+    return projects.project_of[here]
+
+derive programs
+    seen = changed
+    tick = now[]
+    if here eq ''
+        return []
+    return projects.programs_of[here]
+
+derive compiling
+    seen = changed
+    tick = now[]
+    return projects.compile_state[here]
+
+derive boards
+    seen = changed
+    if here eq ''
+        return []
+    return workspace.manifest_of[here].dashboards
+
+--- how many tables the open workspace holds
+derive table_count
+    seen = changed
+    tick = now[]
+    return len[workspace.tables[]]
+
+--- a program's build as a word: compiled from the sources as they are,
+--- compiled from older sources, or not compiled
+fn _build_of[g]
+    if g.fresh
+        return 'compiled'
+    if g.compiled
+        return 'stale: the sources changed since'
+    return 'not compiled'
+
+derive program_rows
+    names = for g in programs
+        g.program
+    bins = for g in programs
+        'bin/`g.binary`'
+    states = for g in programs
+        _build_of[g]
+    return frame.new[program = names, binary = bins, build = states]
+
+derive board_rows
+    names = for b in boards
+        b.name
+    runs = for b in boards
+        b.program
+    counts = for b in boards
+        len[b.tiles]
+    return frame.new[dashboard = names, program = runs, tiles = counts]
+
+fn open_typed[]
+    folder = trim[open_path]
+    if folder eq ''
+        notice['Type the project folder\'s whole path']
+        return
+    if not access.allowed[access.reader_role, access.role_in[access.reader_id, folder], folder, 'read']
+        notice['You have no grant on that project: an admin, or its owner, gives one on the Access page']
+        return
+    _open[folder]
+
+fn open_known[folder]
+    if not access.allowed[access.reader_role, access.role_in[access.reader_id, folder], folder, 'read']
+        notice['You have no grant on that project: an admin, or its owner, gives one on the Access page']
+        return
+    _open[folder]
+
+fn _open[folder]
+    r = projects.open_folder[folder]
+    if not r.ok
+        notice[r.reason]
+        return
+    changed = changed + 1
+    open_path = ''
+    notice['Opened `folder`: its dashboards are on the Dashboards page']
+
+fn close_it[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    c = projects.close_project[]
+    changed = changed + 1
+    notice['Closed the project: Myna\'s workspace is its own folder again']
+
+fn forget_known[folder]
+    if not access.is_admin
+        notice['Only an admin does this']
+        return
+    r = projects.forget[folder]
+    changed = changed + 1
+    notice['Took `folder` off the list; its folder is as it was']
+
+fn ask_new[]
+    making = true
+    new_path = ''
+    new_name = ''
+
+fn close_new[]
+    making = false
+
+fn make_new[]
+    folder = trim[new_path]
+    if folder eq ''
+        notice['Type the new project\'s folder, by its whole path']
+        return
+    if access.reader_id eq ''
+        notice['Sign in first']
+        return
+    r = projects.new_project[folder, new_name]
+    if not r.ok
+        notice[r.reason]
+        return
+    if access.needed
+        g = access.grant[access.reader_id, r.folder, 'owner']
+    making = false
+    changed = changed + 1
+    notice['Made the project at `folder`, with a Hello dashboard: open Dashboards and press Run']
+
+fn compile_all[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    if here eq ''
+        notice['Open a project first']
+        return
+    r = projects.start_compile[here]
+    if not r.ok
+        notice[r.reason]
+        return
+    changed = changed + 1
+    notice['Compiling every program into bin/: the log below follows it']
+
+
+view _fact[label, value]
+    return stack[p[label, size = 'xs', color = 'muted'], p[value, font = 'mono', size = 's'], gap = 'xs']
+
+view _compile_state[]
+    c = compiling
+    if c.log eq ''
+        return p['Not compiled from Myna yet: Compile builds every program the manifest names into bin/ (Lory Studio\'s Compile does the same)', color = 'muted', size = 's']
+    return stack[
+        _compile_said[c],
+        details[summary['The compile\'s log'], scroll[pre[c.log, font = 'mono', size = 's'], height = '320px'], open = c.running],
+        gap = 's']
+
+view _compile_said[c]
+    if c.running
+        return p['compiling now …', color = 'muted', size = 's']
+    if c.code ne 0
+        return p['the last compile failed: a program did not build (its log says which)', color = 'down', size = 's']
+    return p['the last compile finished: every program is compiled', color = 'up', size = 's']
+
+view _opened[]
+    if here eq ''
+        return stack[
+            h2['No project is open'],
+            p['Myna\'s workspace is its own folder. Open a project folder (a crowfile and a myna.json) to work in its workspace and see its dashboards, or make a new project.', color = 'muted', size = 's'],
+            gap = 's', pad = 'm', surface = 'card', border = true]
+    o = opened
+    return stack[
+        row[
+            stack[h2[o.name], p[o.about, color = 'muted', size = 's'], gap = 'xs'],
+            row[
+                button['Compile', click = compile_all, class = 'primary', tip = 'Build every program the manifest names into bin/'],
+                a['Dashboards', href = '/dashboards', class = 'button'],
+                button['Close', click = close_it, tip = 'Myna\'s workspace becomes its own folder again'],
+                gap = 's', wrap = true],
+            justify = 'between', align = 'start', gap = 'm', wrap = true],
+        grid[_fact['Folder', o.folder], _fact['Data', '`o.folder`/`o.data`'], _fact['Tables', '`table_count`'], columns = 3, gap = 'm', class = 'runfacts'],
+        h2['Programs'],
+        table[program_rows],
+        _compile_state[],
+        h2['Dashboards'],
+        table[board_rows],
+        gap = 'm', pad = 'm', surface = 'card', border = true]
+
+view _open_form[]
+    return stack[
+        h2['Open a folder'],
+        form[row[field['Folder', open_path, type = 'text'], button['Open', class = 'primary'], gap = 's', align = 'end', wrap = true], submit = open_typed],
+        p['the project\'s whole path, as /Users/you/code/finchdash', color = 'muted', size = 'xs'],
+        gap = 's', pad = 'm', surface = 'card', border = true, class = 'qform']
+
+view _known_row[g]
+    if g.folder eq here
+        return row[stack[p[g.name, weight = 'bold'], p[g.folder, color = 'muted', size = 'xs', font = 'mono'], gap = 'xs'], p['open', color = 'up', size = 's'], justify = 'between', align = 'center', gap = 'm']
+    return row[
+        stack[p[g.name, weight = 'bold'], p[g.folder, color = 'muted', size = 'xs', font = 'mono'], gap = 'xs'],
+        row[button['Open', click = open_known[g.folder]], button['✕', click = forget_known[g.folder], tip = 'Take it off the list (its folder stays)', confirm = 'Take this project off the list? Its folder stays as it is.'], gap = 'xs'],
+        justify = 'between', align = 'center', gap = 'm']
+
+view _known[]
+    if len[known] eq 0
+        return stack[]
+    rows = for g in known
+        _known_row[g]
+    return stack[h2['Opened before'], stack[rows, gap = 's'], gap = 's', pad = 'm', surface = 'card', border = true]
+
+view _making[]
+    return modal[
+        stack[
+            h2['New project'],
+            p['A folder with a crowfile, a myna.json and a Hello dashboard whose program writes a table; Myna opens it.', color = 'muted', size = 's'],
+            form[field['Folder', new_path, type = 'text'], field['Name', new_name, type = 'text'], button['Create', class = 'primary'], submit = make_new],
+            button['Cancel', click = close_new, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = making]
+
+view _body[]
+    return stack[
+        row[h1['Projects'], p['a Crow project\'s folder as the workspace: its tables, its programs and its dashboards', color = 'muted', size = 's'], gap = 's', align = 'center', wrap = true],
+        _opened[],
+        _open_form[],
+        _known[],
+        gap = 'm', class = 'cells']
+
+view render[]
+    return stack[
+        workbench.screen['Projects', 'Projects', button['New project', click = ask_new], _body[]],
+        _making[]]
+
+--- the page opens a project by its path, lists its programs and its
+--- dashboards, and closes it
+test the_projects_page_opens_and_closes_a_project[]
+    if workspace.base[] ne 'myna_data'
+        c = projects.close_project[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    folder = projects.test_project['proj']
+    assert[folder.ok]
+    a = app[render, wide = true]
+    assert['No project is open' in html[a]]
+    change[a, 'open_path', '`folder`']
+    click[a, open_typed]
+    assert[a.here eq folder]
+    drawn = html[a]
+    assert['Proj' in drawn]
+    assert['dashboards/hello.co' in drawn]
+    assert['not compiled' in drawn]
+    assert['Hello' in drawn]
+    click[a, close_it]
+    assert[a.here eq '']
+    assert['Opened before' in html[a]]
+    assert[workspace.scratch[]]
+    gone = rm[workspace.code[]]

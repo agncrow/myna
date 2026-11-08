@@ -98,3 +98,17 @@ a.button:hover { border-color: var(--crow-accent); }
 /* a description or a model's input, written in a box as wide as its card */
 .wide textarea { width: 100%; min-height: 4em; }
 .wide.mono textarea { font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+/* a dashboard's table tile spans the dashboard, and a long one scrolls in
+   its card */
+.tiles .widetile { grid-column: 1 / -1; }
+.answer.tall { max-height: 440px; overflow: auto; }
+/* a program dashboard's Run: its parameters on one line, wrapped where long */
+.runpanel p { overflow-wrap: anywhere; }
+/* the Code page: the tree, the tabs, the console */
+.tree { flex: 0 0 220px; }
+.tree .treefile { display: block; width: 100%; text-align: left; font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 2px 8px; }
+.tree .treefolder { margin-top: 6px; }
+.tabs .tab button:first-child { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.console pre { margin: 0; white-space: pre-wrap; }
+.opened { min-width: 0; }
+@media (max-width: 900px) { .tree { flex-basis: auto; width: auto !important; } }

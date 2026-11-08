@@ -1,5 +1,12 @@
 # Notebooks
 
+> Since 2026-11-07 the notebooks live on the Code page (`/`), the
+> project's files in a tree with the notebooks first: a notebook is a
+> file, `notebooks/<name>.co`, its cells marked by `--- %%` lines, and
+> any `.co` file opens as cells or as text. The rest of this chapter
+> holds: cells, runs, outputs, schedules and History are as described,
+> with versions now the file's commits, made from the Git drawer.
+
 The Notebooks page (`/`) lists the workspace's notebooks. A notebook is
 a list of cells of Crow.
 

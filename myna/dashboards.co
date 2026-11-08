@@ -4,11 +4,20 @@
 --- rows of the _dashboards log, each tile's last answer a file beside the
 --- logs (myna/tiles.co); the page draws the kept answers and never asks a
 --- query while it draws.
+---
+--- A dashboard of an open project's manifest may name a program: Run runs
+--- it with the dashboard's parameters (each a `name=value` line, kept per
+--- dashboard in the settings), compiled where the project's bin/ holds a
+--- binary built from the sources as they are and interpreted otherwise,
+--- keeps the run in _runs, and refreshes the tiles, whose queries read the
+--- tables the program wrote (myna/projects.co).
 use web, ui, frame
 use myna.workspace
 use myna.workbench
+use myna.access
 use myna.queries
 use myna.tiles
+use myna.projects
 
 --- a tile as the page draws it: what it shows, its last answer (its
 --- labels and numbers for bars and a number, the frame for a table) or
@@ -27,6 +36,12 @@ add_draw = 'bars'
 add_title = ''
 --- moved by every write, so the lists read again
 changed = 0
+--- the parameters being edited, and the dashboard they are for
+editing_params = false
+params_text = ''
+params_for = ''
+--- the output of the last run shown open
+output_open = false
 
 derive names
     seen = changed
@@ -51,6 +66,63 @@ derive every
     seen = changed
     return workspace.board_every[shown]
 
+--- the open project's folder, '' where none is open
+derive project_folder
+    seen = changed
+    tick = now[]
+    return projects.current[]
+
+--- the shown dashboard as the open project's manifest has it: its
+--- program ('' where it names none, or no project is open) and its
+--- parameters
+derive manifest_board
+    seen = changed
+    return workspace.board_named[shown]
+
+derive board_program
+    return manifest_board.program
+
+--- how Run runs the program now: compiled where its binary is built from
+--- the sources as they are, interpreted otherwise
+derive run_mode
+    seen = changed
+    tick = now[]
+    if board_program eq ''
+        return ''
+    if projects.fresh_binary[project_folder, board_program]
+        return 'compiled'
+    return 'interpreted'
+
+--- the parameters a dashboard's program runs with: the ones saved for
+--- it, else the manifest's defaults, a `name=value` line each
+fn _defaults_text[b]
+    lines = []
+    for i in range[len[b.param_names]]
+        lines = push[lines, '`b.param_names[i]`=`b.param_defaults[i]`']
+    return join[lines, '\n']
+
+fn _params_key[dash]
+    return 'params · `dash`'
+
+derive params_now
+    seen = changed
+    if board_program eq ''
+        return ''
+    return workspace.setting[_params_key[shown], _defaults_text[manifest_board]]
+
+--- the dashboard's runs, newest first
+derive board_runs
+    seen = changed
+    tick = now[]
+    return workspace.runs[shown]
+
+derive last_output
+    seen = changed
+    if len[board_runs] eq 0
+        return ''
+    r = workspace.small[board_runs.run[0]]
+    return workspace.run_output[r]
+
 --- a number a cell holds, 0 where it holds none
 fn _number[c]
     n = float[c]
@@ -63,11 +135,17 @@ fn _no_answer[tile, title, draw, query, problem, at]
 
 --- a tile's kept answer read back: its first text column as the labels,
 --- its first column of numbers as the amounts
-fn _tile_of[tile, title, draw, query, answers]
+fn _tile_of[tile, key, title, draw, asked, answers]
+    --- (the tile's query, said as its verb and table: a view shows it
+    --- without reading the files)
+    q = workspace.saved_query[asked]
+    verb = queries.field_of[q, 'verb']
+    tbl = queries.field_of[q, 'table']
+    query = '`verb` of `tbl`'
     at = ''
     problem = ''
     rows = 0
-    mine = answers[answers.tile eq tile]
+    mine = answers[answers.tile eq key]
     if mine.ok
         for c in mine.at
             at = workspace.text_of[c]
@@ -79,7 +157,7 @@ fn _tile_of[tile, title, draw, query, answers]
         return _no_answer[tile, title, draw, query, 'Not refreshed yet', at]
     if problem ne ''
         return _no_answer[tile, title, draw, query, problem, at]
-    f = frame.load[workspace.tile_file[tile]]
+    f = frame.load[workspace.tile_file[key]]
     if not f.ok
         return _no_answer[tile, title, draw, query, 'The answer is not kept: Refresh asks again', at]
     cols = f.columns
@@ -117,7 +195,7 @@ fn _board_of[dash]
     titles = for c in t.title
         workspace.text_of[c]
     for i in range[len[ids]]
-        found = push[found, _tile_of[ids[i], titles[i], draws[i], asked[i], answers]]
+        found = push[found, _tile_of[ids[i], workspace.tile_key[dash, titles[i]], titles[i], draws[i], asked[i], answers]]
     return found
 
 --- the tiles drawn: read again as the clock moves, since the scheduler
@@ -135,6 +213,9 @@ fn close_naming[]
     naming = false
 
 fn create_board[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     name = trim[new_name]
     if name eq ''
         notice['Name the dashboard first']
@@ -151,6 +232,9 @@ fn create_board[]
     current = name
 
 fn drop_board[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     name = shown
     w = tiles.remove_board[name]
     if not w.ok
@@ -158,7 +242,7 @@ fn drop_board[]
         return
     changed = changed + 1
     current = ''
-    notice['Removed `name`; its versions stay in _dashboards']
+    notice['Removed `name` from the manifest']
 
 fn open_adding[]
     adding = true
@@ -170,6 +254,9 @@ fn close_adding[]
     adding = false
 
 fn add_one[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     name = trim[add_query]
     if name eq ''
         notice['Pick a saved query']
@@ -185,6 +272,9 @@ fn add_one[]
     adding = false
 
 fn drop_tile[tile]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     w = tiles.remove_tile[shown, tile]
     if not w.ok
         notice['The tile was not removed: `w.reason`']
@@ -192,6 +282,9 @@ fn drop_tile[tile]
     changed = changed + 1
 
 fn earlier[tile]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     w = tiles.move_tile[shown, tile, -1]
     if not w.ok
         notice['The tile was not moved: `w.reason`']
@@ -199,6 +292,9 @@ fn earlier[tile]
     changed = changed + 1
 
 fn later_place[tile]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     w = tiles.move_tile[shown, tile, 1]
     if not w.ok
         notice['The tile was not moved: `w.reason`']
@@ -211,11 +307,69 @@ fn refresh_now[]
     notice['Refreshed `n` tiles']
 
 fn refresh_every[seconds]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     w = tiles.set_every[shown, seconds]
     if not w.ok
         notice['The refresh was not set: `w.reason`']
         return
     changed = changed + 1
+
+fn edit_params[]
+    params_text = params_now
+    params_for = shown
+    editing_params = true
+
+fn close_params[]
+    editing_params = false
+
+fn default_params[]
+    params_text = _defaults_text[manifest_board]
+
+fn save_params[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    w = workspace.put_setting[_params_key[shown], params_text]
+    if not w.ok
+        notice['The parameters were not saved: `w.reason`']
+        return
+    editing_params = false
+    changed = changed + 1
+
+--- the dashboard's program run with its parameters (the ones being
+--- edited, saved first), the run kept in _runs, and the tiles refreshed
+fn run_board[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    prog = board_program
+    if prog eq ''
+        notice['This dashboard names no program to run: Refresh asks its queries again']
+        return
+    given = params_now
+    if editing_params and params_for eq shown
+        given = params_text
+        w = workspace.put_setting[_params_key[shown], params_text]
+        editing_params = false
+    at = str[now[]]
+    r = projects.run_program[project_folder, prog, split[given, '\n'], 900]
+    status = 'ok'
+    if r.status ne 0
+        status = 'failed'
+    kept = workspace.put_run[shown, at, 'dashboard', 0, status, r.ms, r.output]
+    n = tiles.refresh[shown]
+    changed = changed + 1
+    secs = queries.shown_number[float[r.ms] / 1000.0]
+    if r.status ne 0
+        output_open = true
+        notice['`prog` failed (exit `r.status`, `r.mode`, `secs` s): its output is under Run']
+        return
+    notice['Ran `prog` `r.mode` in `secs` s and refreshed `n` tiles']
+
+fn toggle_output[]
+    output_open = not output_open
 
 view _labelled[label, child]
     return stack[p[label, size = 'xs', class = 'qlabel'], child, gap = 'xs']
@@ -263,18 +417,24 @@ view _drawn[t]
     if t.draw eq 'number'
         return _number_of[t]
     if t.draw eq 'table'
-        return stack[table[head[t.answer, 10], hide = ['_pos']], class = 'answer']
+        if len[t.answer] gt 200
+            return stack[stack[table[head[t.answer, 200], hide = ['_pos'], sort = true], class = 'answer tall'], p['the first 200 of `len[t.answer]` rows', color = 'muted', size = 'xs'], gap = 'xs']
+        return stack[table[t.answer, hide = ['_pos'], sort = true], class = 'answer tall']
     return _bars[t]
 
 --- when the tile's answer was made, and from which saved query where its
 --- title does not say
 fn _caption[t]
     when = workspace.short_at[t.at]
-    if t.title eq t.query
-        return when
     if t.at eq ''
         return 'from `t.query`'
     return 'from `t.query` · `when`'
+
+--- a table is as wide as the dashboard: its columns need the room
+fn _tile_class[t]
+    if t.draw eq 'table'
+        return 'tile widetile'
+    return 'tile'
 
 view _tile_card[t]
     return stack[
@@ -288,7 +448,87 @@ view _tile_card[t]
             justify = 'between', align = 'center', gap = 's'],
         _drawn[t],
         p[_caption[t], color = 'muted', size = 'xs'],
-        gap = 's', pad = 'm', surface = 'card', border = true, class = 'tile']
+        gap = 's', pad = 'm', surface = 'card', border = true, class = _tile_class[t]]
+
+--- the parameters as the program is handed them, on one line
+fn _params_line[lines_text]
+    given = []
+    for line in split[lines_text, '\n']
+        t = trim[line]
+        if t ne ''
+            given = push[given, t]
+    if len[given] eq 0
+        return 'no parameters'
+    return join[given, ' · ']
+
+view _run_state[]
+    if run_mode eq 'compiled'
+        return p['compiled: Run starts its binary in bin/', color = 'up', size = 'xs']
+    return p['interpreted: bin/ holds no binary built from the sources as they are (Compile it on the Projects page, or in Lory Studio)', color = 'muted', size = 'xs']
+
+view _params_editor[]
+    if not (editing_params and params_for eq shown)
+        return stack[]
+    return stack[
+        p['a name=value line each; a blank value takes the program\'s own default', color = 'muted', size = 'xs'],
+        stack[field['', params_text, lines = 8], class = 'wide mono'],
+        row[
+            button['Run with these', click = run_board, class = 'primary'],
+            button['Save', click = save_params],
+            button['Defaults', click = default_params, tip = 'The manifest\'s defaults'],
+            button['Cancel', click = close_params, shortcut = 'escape'],
+            gap = 's', wrap = true],
+        gap = 's']
+
+view _status_word[status]
+    if status eq 'ok'
+        return p['ok', color = 'up', size = 'xs', weight = 'bold']
+    return p[status, color = 'down', size = 'xs', weight = 'bold']
+
+view _output_box[]
+    if not output_open
+        return stack[]
+    return scroll[pre[last_output, font = 'mono', size = 's'], height = '320px']
+
+view _last_run[]
+    if len[board_runs] eq 0
+        return p['Not run from Myna yet: Run writes the tables its tiles show', color = 'muted', size = 'xs']
+    at = workspace.text_of[board_runs.at[0]]
+    status = workspace.text_of[board_runs.status[0]]
+    secs = queries.shown_number[float[workspace.small[board_runs.ms[0]]] / 1000.0]
+    label = 'Output'
+    if output_open
+        label = 'Hide output'
+    return stack[
+        row[p['last run', color = 'muted', size = 'xs'], _status_word[status], p['`at` · `secs` s', color = 'muted', size = 'xs'], button[label, click = toggle_output], gap = 's', align = 'center', wrap = true],
+        _output_box[],
+        gap = 's']
+
+--- a dashboard of the open project's manifest that names a program: the
+--- program, how Run runs it, its parameters and its last run
+view _run_panel[]
+    if board_program eq ''
+        return stack[]
+    return stack[
+        row[
+            stack[
+                row[p['Program', color = 'muted', size = 'xs'], a[board_program, href = '/?current=`board_program`', font = 'mono', size = 's', tip = 'Open the program on the Code page'], gap = 's', align = 'center'],
+                _run_state[],
+                gap = 'xs'],
+            row[
+                button['Run', click = run_board, class = 'primary', tip = 'Run the program with these parameters, then refresh the tiles'],
+                button['Parameters', click = edit_params, tip = 'The name=value lines the program is handed'],
+                gap = 's'],
+            justify = 'between', align = 'center', gap = 'm', wrap = true],
+        p[_params_line[params_now], font = 'mono', size = 'xs'],
+        _params_editor[],
+        _last_run[],
+        gap = 's', pad = 'm', surface = 'card', border = true, class = 'runpanel']
+
+view _about[]
+    if manifest_board.about eq ''
+        return stack[]
+    return p[manifest_board.about, color = 'muted', size = 's']
 
 fn _every_label[seconds]
     if seconds eq 0
@@ -373,6 +613,8 @@ view _body[]
     return stack[
         row[h1['Dashboards'], p['saved queries side by side, refreshed on demand or on a schedule', color = 'muted', size = 's'], gap = 's', align = 'center', wrap = true],
         _switcher[],
+        _about[],
+        _run_panel[],
         _controls[],
         _adding[],
         _tiles[],
@@ -392,7 +634,7 @@ view render[]
 --- refreshed, moved and removed
 test a_dashboard_shows_saved_queries_as_tiles[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 2], shop = ['north', 'south', 'north']], by = ['item']]
     s = workspace.put_query['by shop', map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum'], '2026-11-05T10:00:00Z', true]
@@ -430,4 +672,36 @@ test a_dashboard_shows_saved_queries_as_tiles[]
     assert[len[a.board] eq 1]
     click[a, drop_board]
     assert['No dashboards yet' in html[a]]
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
+
+--- a dashboard of the open project's manifest runs its program with its
+--- parameters and shows the tables the run wrote
+test a_program_dashboard_runs_and_shows_what_it_wrote[]
+    if workspace.base[] ne 'myna_data'
+        c = projects.close_project[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    folder = projects.test_project['proj']
+    assert[folder.ok]
+    opened = projects.open_folder['`folder`']
+    assert[opened.ok]
+    a = app[render, wide = true]
+    assert[a.shown eq 'Hello']
+    assert[a.board_program eq 'dashboards/hello.co']
+    assert[a.run_mode eq 'interpreted']
+    assert['who=world · times=3' in html[a]]
+    assert['Not run from Myna yet' in html[a]]
+    click[a, edit_params]
+    change[a, 'params_text', 'who=crow\ntimes=4']
+    click[a, run_board]
+    drawn = html[a]
+    assert['hello, crow (4)' in drawn]
+    assert['>4<' in drawn]
+    assert[a.params_now eq 'who=crow\ntimes=4']
+    assert[len[a.board_runs] eq 1]
+    click[a, toggle_output]
+    assert['wrote 4 greetings to crow' in html[a]]
+    done = projects.close_project[]
+    assert[workspace.scratch[]]
+    gone = rm[workspace.code[]]

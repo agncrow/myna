@@ -8,6 +8,7 @@ use web, ui, frame
 use myna.workspace
 use myna.engine
 use myna.workbench
+use myna.access
 
 asked = 0
 run_open = -1
@@ -80,6 +81,9 @@ derive run_text
 
 --- the scheduler started in the background, the page's port handed to it
 fn start_scheduler[]
+    if not access.is_admin
+        notice['Only an admin does this']
+        return
     home = workspace.home[]
     if exists['`home`/_scheduler.stop']
         gone = rm['`home`/_scheduler.stop']
@@ -91,6 +95,9 @@ fn start_scheduler[]
     notice['The scheduler is starting: it writes its first round within a few seconds (log: `home`/_scheduler.log)']
 
 fn stop_scheduler[]
+    if not access.is_admin
+        notice['Only an admin does this']
+        return
     w = write['`workspace.home[]`/_scheduler.stop', str[now[]]]
     if not w.ok
         notice['The scheduler was not asked to stop: `w.reason`']
@@ -161,7 +168,7 @@ view render[]
 --- output opens
 test the_runs_and_schedules_are_listed[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     w = workspace.put_cell['daily', 0, 'log[1]', true, '2026-11-04T10:00:00Z']
     s = workspace.put_schedule['daily', 86400, '2026-11-04T10:00:00Z']
@@ -173,4 +180,4 @@ test the_runs_and_schedules_are_listed[]
     assert['not running' in html[a]]
     click[a, show_run[r]]
     assert['── cell [1] ──' in run_text]
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]

@@ -1,0 +1,468 @@
+--- Access: who may do what. The workspace's users and their grants on
+--- its projects, two logs of Myna's own folder (`_users`, `_grants`),
+--- and the derivations every page reads: who the reader is, and whether
+--- they may read, write or grant in the open project (docs/platform.md,
+--- Access to data).
+---
+--- A workspace with no users is one person's own machine: the reader is
+--- the account Myna runs as, an admin with every grant, and no page asks
+--- for a sign-in. The first user added is an admin, and from then on
+--- Myna asks everyone to sign in. A user's workspace role is `admin`
+--- (everything, everywhere) or `member` (what their grants allow); a
+--- grant on a project is `viewer` (read), `editor` (read and write) or
+--- `owner` (read, write and grant). The sign-in is Crow's: `sign_in`
+--- gives the browser a signed cookie carrying the user, their name and
+--- their role, and `reader` reads it on every page; the role is read
+--- from the log again, so a change lands without a new sign-in.
+use web, ui, frame, magpie
+use myna.workspace
+use myna.projects
+
+--- a user as the log holds them (the hash stays in the log)
+struct User [user, name, email, role, active, at]
+
+--- a grant: a user's role on a project (the project's folder)
+struct Grant [user, project, role, at]
+
+fn _users_log[]
+    return '`workspace.base[]`/_users'
+
+fn _grants_log[]
+    return '`workspace.base[]`/_grants'
+
+--- whether a log holds nothing yet, or is not there
+fn _none[dir]
+    h = magpie.head[dir]
+    if not h.ok
+        return true
+    return h lt 0
+
+fn _text[c]
+    s = str[c]
+    if not s.ok
+        return ''
+    return s
+
+--- ---- users ----
+
+--- a user's name as the log keys it: lowercase letters, digits, `_`, `.`
+--- and `-`, two to thirty-two of them
+fn good_name[user]
+    u = trim[user]
+    if len[u] lt 2 or len[u] gt 32
+        return false
+    for ch in split[u, '']
+        if ch not in 'abcdefghijklmnopqrstuvwxyz0123456789_.-'
+            return false
+    return true
+
+--- every user, the newest row of each, active or not, by name
+fn users[]
+    found = []
+    if _none[_users_log[]]
+        return found
+    f = magpie.latest[_users_log[]]
+    if not f.ok
+        return found
+    rows = sort[f, 'user']
+    n = 0
+    for u in rows.user
+        found = push[found, User[_text[u], _text[rows.name[n]], _text[rows.email[n]], _text[rows.role[n]], _text[rows.active[n]] eq 'true', _text[rows.at[n]]]]
+        n = n + 1
+    return found
+
+--- whether the workspace has a user who can sign in: then every page asks
+--- for a sign-in
+fn has_users[]
+    for u in users[]
+        if u.active
+            return true
+    return false
+
+--- the user of a name, or why there is none
+fn user_named[user]
+    for u in users[]
+        if u.user eq user
+            return u
+    return error['There is no user `user`', 'myna']
+
+--- the user's stored hash, '' where there is no such user
+fn _hash_of[user]
+    if _none[_users_log[]]
+        return ''
+    f = magpie.latest[_users_log[]]
+    if not f.ok
+        return ''
+    mine = f[f.user eq user]
+    if not mine.ok
+        return ''
+    if len[mine] eq 0
+        return ''
+    return _text[mine.hash[0]]
+
+fn _write_user[user, name, email, hashed, role, active]
+    if not exists[workspace.base[]]
+        made = mkdir[workspace.base[]]
+    return magpie.batch[_users_log[], frame.new[user = [user], name = [name], email = [email], hash = [hashed], role = [role], active = ['`active`'], at = [str[now[]]]], by = ['user']]
+
+--- a user added: the first is an admin whatever role was asked
+fn add_user[user, name, email, password, role]
+    u = trim[user]
+    if not good_name[u]
+        return error['A user name is two to thirty-two lowercase letters, digits, _, . or -', 'myna']
+    if len[password] lt 8
+        return error['A password is at least eight characters', 'myna']
+    if role not in ['admin', 'member']
+        return error['A role is admin or member', 'myna']
+    if user_named[u].ok
+        return error['There is a user `u` already', 'myna']
+    r = role
+    if not has_users[]
+        r = 'admin'
+    shown = trim[name]
+    if shown eq ''
+        shown = u
+    return _write_user[u, shown, trim[email], hash[password, 'password'], r, true]
+
+--- a user's row written again with one thing changed
+fn _changed[user, password, role, active]
+    u = user_named[user]
+    if not u.ok
+        return u
+    hashed = _hash_of[user]
+    if password ne ''
+        if len[password] lt 8
+            return error['A password is at least eight characters', 'myna']
+        hashed = hash[password, 'password']
+    r = u.role
+    if role ne ''
+        if role not in ['admin', 'member']
+            return error['A role is admin or member', 'myna']
+        r = role
+    live = u.active
+    if active eq 'true'
+        live = true
+    if active eq 'false'
+        live = false
+    return _write_user[u.user, u.name, u.email, hashed, r, live]
+
+fn set_password[user, password]
+    return _changed[user, password, '', '']
+
+fn set_role[user, role]
+    return _changed[user, '', role, '']
+
+fn set_active[user, active]
+    return _changed[user, '', '', '`active`']
+
+--- whether the password is the user's, and the user may sign in
+fn check[user, password]
+    u = user_named[user]
+    if not u.ok
+        return false
+    if not u.active
+        return false
+    stored = _hash_of[user]
+    if stored eq ''
+        return false
+    return hash[password, stored] eq stored
+
+--- ---- grants ----
+
+fn _write_grant[user, project, role, live]
+    if not exists[workspace.base[]]
+        made = mkdir[workspace.base[]]
+    return magpie.batch[_grants_log[], frame.new[user = [user], project = [project], role = [role], live = ['`live`'], at = [str[now[]]]], by = ['user', 'project']]
+
+--- a user granted a role on a project (its folder)
+fn grant[user, project, role]
+    if role not in ['viewer', 'editor', 'owner']
+        return error['A grant is viewer, editor or owner', 'myna']
+    u = user_named[user]
+    if not u.ok
+        return u
+    if trim[project] eq ''
+        return error['A grant names a project', 'myna']
+    return _write_grant[user, trim[project], role, true]
+
+fn revoke[user, project]
+    return _write_grant[user, project, '', false]
+
+--- every live grant, newest row per user and project
+fn grants[]
+    found = []
+    if _none[_grants_log[]]
+        return found
+    f = magpie.latest[_grants_log[]]
+    if not f.ok
+        return found
+    rows = sort[f, ['project', 'user']]
+    n = 0
+    for u in rows.user
+        if _text[rows.live[n]] eq 'true'
+            found = push[found, Grant[_text[u], _text[rows.project[n]], _text[rows.role[n]], _text[rows.at[n]]]]
+        n = n + 1
+    return found
+
+--- the grants on one project
+fn grants_of[project]
+    found = []
+    for g in grants[]
+        if g.project eq project
+            found = push[found, g]
+    return found
+
+--- a user's role on a project, '' where they have none
+fn role_in[user, project]
+    for g in grants[]
+        if g.user eq user and g.project eq project
+            return g.role
+    return ''
+
+--- whether a reader of a workspace role, with a grant, may do a verb
+--- (`read`, `write`, `grant`) in a project: an admin may do anything; in
+--- Myna's own folder (no project) anyone signed in reads and writes
+fn allowed[role, granted, project, verb]
+    if role eq 'admin'
+        return true
+    if project eq ''
+        return verb ne 'grant'
+    if granted eq 'owner'
+        return true
+    if granted eq 'editor'
+        return verb ne 'grant'
+    if granted eq 'viewer'
+        return verb eq 'read'
+    return false
+
+--- ---- the reader, per session ----
+
+--- whether the workspace asks for a sign-in: it has a user who can
+derive needed
+    tick = now[]
+    return has_users[]
+
+--- the signed-in reader, when the cookie names a user who is still active
+--- (a user deactivated is signed out as far as the pages are concerned)
+derive signed_in
+    tick = now[]
+    if 'id' not in reader
+        return false
+    u = user_named[reader.id]
+    if not u.ok
+        return false
+    return u.active
+
+--- who is reading: the signed-in user; on a machine with no users, the
+--- account Myna runs as; '' for someone who must sign in first
+derive reader_id
+    if signed_in
+        return reader.id
+    if needed
+        return ''
+    return env['USER', 'you']
+
+--- the reader's shown name
+derive reader_name
+    if signed_in
+        u = user_named[reader.id]
+        if u.ok
+            return u.name
+        return reader.id
+    return reader_id
+
+--- the reader's workspace role, read from the log (the cookie's may be
+--- stale): an admin where the workspace has no users
+derive reader_role
+    if signed_in
+        u = user_named[reader.id]
+        if u.ok
+            return u.role
+        return 'member'
+    if needed
+        return ''
+    return 'admin'
+
+derive is_admin
+    return reader_role eq 'admin'
+
+--- the reader's grant on the open project
+derive granted
+    tick = now[]
+    if reader_id eq ''
+        return ''
+    return role_in[reader_id, projects.current[]]
+
+derive may_read
+    if reader_id eq ''
+        return false
+    return allowed[reader_role, granted, projects.current[], 'read']
+
+derive may_write
+    if reader_id eq ''
+        return false
+    return allowed[reader_role, granted, projects.current[], 'write']
+
+derive may_grant
+    if reader_id eq ''
+        return false
+    return allowed[reader_role, granted, projects.current[], 'grant']
+
+--- ---- signing in and out ----
+
+sign_user = ''
+sign_pass = ''
+
+fn do_sign_in[]
+    u = trim[sign_user]
+    if not check[u, sign_pass]
+        sign_pass = ''
+        notice['The name or the password is not right']
+        return
+    found = user_named[u]
+    sign_pass = ''
+    sign_user = ''
+    sign_in[map[id = found.user, name = found.name, role = found.role]]
+
+fn do_sign_out[]
+    sign_out[]
+
+--- the sidebar's sign-out, shown to a signed-in reader
+view sign_out_button[]
+    return button['Sign out', click = do_sign_out]
+
+--- the sign-in form: every page shows it, in place of itself, while the
+--- workspace asks for a sign-in and the reader has none
+view sign_in_form[]
+    return stack[
+        row[
+            p['"', color = 'accent', weight = 'bold', font = 'mono'],
+            p['(o.o)', weight = 'bold', font = 'mono'],
+            p['"', color = 'accent', weight = 'bold', font = 'mono'],
+            p['Myna', weight = 'bold'],
+            gap = 'xs', align = 'center'],
+        h2['Sign in'],
+        form[
+            field['User', sign_user, type = 'text'],
+            field['Password', sign_pass, type = 'password'],
+            button['Sign in', class = 'primary'],
+            submit = do_sign_in],
+        gap = 'm', pad = 'l', surface = 'card', border = true, max_width = '360px']
+
+--- what a page shows a reader who may not read the open project
+view no_access[]
+    return stack[
+        h2['No access'],
+        p['You have no grant on this project. An admin, or the project\'s owner, gives one on the Access page.', color = 'muted', size = 's'],
+        gap = 's', pad = 'm', surface = 'card', border = true, max_width = '560px']
+
+--- a workspace with no users has one reader, an admin; the first user
+--- added is an admin whatever was asked, and from then on sign-in is
+--- asked for; a password is checked against its hash; a user deactivated
+--- cannot sign in; a role read from the log, not the cookie
+test users_and_sign_in[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.base[]]
+    workspace.ready[]
+    assert[not has_users[]]
+    assert[not needed]
+    assert[reader_id eq env['USER', 'you']]
+    assert[is_admin]
+    assert[may_write]
+    assert[not good_name['Ann']]
+    assert[good_name['ann.b-2']]
+    assert[not add_user['ann', 'Ann', '', 'short', 'member'].ok]
+    assert[add_user['ann', 'Ann', 'ann@x', 'longenough', 'member'].ok]
+    assert[user_named['ann'].role eq 'admin']
+    assert[not add_user['ann', 'Ann', '', 'longenough', 'member'].ok]
+    assert[add_user['bo', '', '', 'bo-is-here', 'member'].ok]
+    assert[user_named['bo'].name eq 'bo']
+    assert[user_named['bo'].role eq 'member']
+    assert[len[users[]] eq 2]
+    assert[has_users[]]
+    assert[check['ann', 'longenough']]
+    assert[not check['ann', 'longenougg']]
+    assert[not check['nobody', 'longenough']]
+    assert[set_password['bo', 'bo-was-here'].ok]
+    assert[check['bo', 'bo-was-here']]
+    assert[not check['bo', 'bo-is-here']]
+    assert[set_active['bo', false].ok]
+    assert[not check['bo', 'bo-was-here']]
+    assert[set_active['bo', true].ok]
+    assert[check['bo', 'bo-was-here']]
+    assert[set_role['bo', 'admin'].ok]
+    assert[user_named['bo'].role eq 'admin']
+    assert[set_role['bo', 'member'].ok]
+    assert[not set_role['bo', 'king'].ok]
+    gone = rm[workspace.base[]]
+
+--- grants: a member reads with a viewer's grant, writes with an editor's,
+--- grants with an owner's; an admin needs none; a grant revoked is gone
+test grants_say_who_may_do_what[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.base[]]
+    workspace.ready[]
+    assert[add_user['ann', 'Ann', '', 'longenough', 'admin'].ok]
+    assert[add_user['bo', 'Bo', '', 'longenough', 'member'].ok]
+    assert[not grant['bo', '/p/one', 'king'].ok]
+    assert[not grant['cy', '/p/one', 'viewer'].ok]
+    assert[grant['bo', '/p/one', 'viewer'].ok]
+    assert[role_in['bo', '/p/one'] eq 'viewer']
+    assert[role_in['bo', '/p/two'] eq '']
+    assert[allowed['member', 'viewer', '/p/one', 'read']]
+    assert[not allowed['member', 'viewer', '/p/one', 'write']]
+    assert[allowed['member', 'editor', '/p/one', 'write']]
+    assert[not allowed['member', 'editor', '/p/one', 'grant']]
+    assert[allowed['member', 'owner', '/p/one', 'grant']]
+    assert[not allowed['member', '', '/p/one', 'read']]
+    assert[allowed['member', '', '', 'write']]
+    assert[not allowed['member', '', '', 'grant']]
+    assert[allowed['admin', '', '/p/one', 'grant']]
+    assert[grant['bo', '/p/one', 'editor'].ok]
+    assert[role_in['bo', '/p/one'] eq 'editor']
+    assert[len[grants_of['/p/one']] eq 1]
+    assert[revoke['bo', '/p/one'].ok]
+    assert[role_in['bo', '/p/one'] eq '']
+    assert[len[grants[]] eq 0]
+    gone = rm[workspace.base[]]
+
+--- the derivations follow the reader: with users, a page asks for a
+--- sign-in; the sign-in form signs a user in by their password; the
+--- reader's role is the log's; signing out leaves no reader
+test the_reader_is_known_per_session[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.base[]]
+    workspace.ready[]
+    assert[add_user['ann', 'Ann', '', 'longenough', 'admin'].ok]
+    assert[add_user['bo', 'Bo', '', 'longenough', 'member'].ok]
+    a = app[sign_in_form]
+    assert[a.needed]
+    assert[not a.signed_in]
+    assert[a.reader_id eq '']
+    assert[not a.may_read]
+    change[a, 'sign_user', 'bo']
+    change[a, 'sign_pass', 'wrong']
+    click[a, do_sign_in]
+    assert[not a.signed_in]
+    change[a, 'sign_user', 'bo']
+    change[a, 'sign_pass', 'longenough']
+    click[a, do_sign_in]
+    assert[a.signed_in]
+    assert[a.reader_id eq 'bo']
+    assert[a.reader_name eq 'Bo']
+    assert[a.reader_role eq 'member']
+    assert[not a.is_admin]
+    assert[a.may_write]
+    assert[not a.may_grant]
+    click[a, do_sign_out]
+    assert[not a.signed_in]
+    assert[a.reader_id eq '']
+    b = app[sign_in_form]
+    change[b, 'reader', map[id = 'ann', name = 'Ann', role = 'member']]
+    assert[b.reader_role eq 'admin']
+    assert[b.is_admin]
+    c = app[sign_in_form]
+    change[c, 'reader', map[id = 'nobody', name = 'X', role = 'admin']]
+    assert[not c.signed_in]
+    assert[c.reader_id eq '']
+    gone = rm[workspace.base[]]

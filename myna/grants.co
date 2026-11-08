@@ -1,0 +1,170 @@
+--- Access: who may do what in a project (myna/access.co). An admin, or
+--- the project's owner, grants a user a role on it — viewer (read),
+--- editor (read and write), owner (read, write and grant) — and takes a
+--- grant away. The project is picked among the ones the workspace knows
+--- (the Projects page), the open one first; `project` is in the URL.
+use web, ui, frame
+use myna.workspace
+use myna.workbench
+use myna.projects
+use myna.access
+
+project = ''
+changed = 0
+grant_user = ''
+grant_role = 'viewer'
+
+--- the projects the workspace knows, their folders, the open one first
+derive folders
+    seen = changed
+    tick = now[]
+    found = []
+    here = projects.current[]
+    if here ne ''
+        found = push[found, here]
+    for p in projects.projects[]
+        if p.folder not in found
+            found = push[found, p.folder]
+    return found
+
+--- the project the page is on: the one picked, else the open one, else
+--- the first known
+derive picked
+    if project ne '' and project in folders
+        return project
+    if len[folders] eq 0
+        return ''
+    return folders[0]
+
+derive picked_name
+    if picked eq ''
+        return ''
+    return projects.project_of[picked].name
+
+derive listing
+    seen = changed
+    tick = now[]
+    return access.grants_of[picked]
+
+--- the active users, by name, for the form
+derive user_names
+    seen = changed
+    tick = now[]
+    found = []
+    for u in access.users[]
+        if u.active
+            found = push[found, u.user]
+    return found
+
+--- whether the reader may grant on the picked project: an admin, or its
+--- owner
+derive may_here
+    if access.reader_id eq ''
+        return false
+    return access.allowed[access.reader_role, access.role_in[access.reader_id, picked], picked, 'grant']
+
+fn give[]
+    if not may_here
+        notice['Only an admin, or the project\'s owner, grants on it']
+        return
+    r = access.grant[grant_user, picked, grant_role]
+    if not r.ok
+        notice[r.reason]
+        return
+    changed = changed + 1
+    notice['`grant_user` is `grant_role` of `picked_name`']
+
+fn take[user]
+    if not may_here
+        notice['Only an admin, or the project\'s owner, takes a grant away']
+        return
+    r = access.revoke[user, picked]
+    if not r.ok
+        notice[r.reason]
+        return
+    changed = changed + 1
+    notice['`user` has no grant on `picked_name` now']
+
+view _grant_row[g]
+    return row[
+        row[p[g.user, weight = 'bold', font = 'mono'], p[g.role, color = 'up', size = 's'], gap = 's', align = 'center'],
+        button['Remove', click = take[g.user], confirm = 'Take `g.user`\'s grant on this project away?'],
+        justify = 'between', align = 'center', gap = 'm']
+
+view _grants[]
+    if len[listing] eq 0
+        return p['Nobody has a grant on this project: admins see it, nobody else does', color = 'muted', size = 's']
+    rows = for g in listing
+        _grant_row[g]
+    return stack[rows, gap = 's']
+
+view _form[]
+    if not may_here
+        return p['An admin, or the project\'s owner, grants on it', color = 'muted', size = 's']
+    if len[user_names] eq 0
+        return p['Add users first (Users)', color = 'muted', size = 's']
+    return form[
+        row[
+            select[user_names, grant_user],
+            select[['viewer', 'editor', 'owner'], grant_role],
+            button['Grant', class = 'primary'],
+            gap = 's', align = 'end', wrap = true],
+        submit = give]
+
+view _project[]
+    if len[folders] eq 0
+        return p['No project is known yet: open one on the Projects page', color = 'muted', size = 's']
+    return stack[
+        row[p['Project', color = 'muted', size = 'xs', weight = 'bold'], select[folders, project], gap = 's', align = 'center', wrap = true],
+        h2[picked_name],
+        p[picked, color = 'muted', size = 'xs', font = 'mono'],
+        gap = 's']
+
+view _body[]
+    return stack[
+        row[h1['Access'], p['who may read, write and grant in each project; an admin needs no grant', color = 'muted', size = 's'], gap = 's', align = 'center', wrap = true],
+        stack[_project[], _grants[], _form[], gap = 'm', pad = 'm', surface = 'card', border = true],
+        gap = 'm']
+
+view render[]
+    return workbench.screen['Access', 'Access', workbench.new_notebook[], _body[]]
+
+--- an admin grants a member a role on a project and takes it away; the
+--- member, no owner, grants nothing; the project's owner grants
+test grants_are_given_and_taken[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.base[]]
+    workspace.ready[]
+    assert[access.add_user['ann', 'Ann', '', 'longenough', 'admin'].ok]
+    assert[access.add_user['bo', 'Bo', '', 'longenough', 'member'].ok]
+    assert[access.add_user['cy', 'Cy', '', 'longenough', 'member'].ok]
+    folder = projects.test_project['granted']
+    assert[folder.ok]
+    r = projects._register[projects.project_of[folder], true]
+    assert[r.ok]
+    a = app[render, wide = true]
+    change[a, 'reader', map[id = 'ann', name = 'Ann', role = 'admin']]
+    assert[a.picked eq folder]
+    assert['Nobody has a grant' in html[a]]
+    change[a, 'grant_user', 'bo']
+    change[a, 'grant_role', 'owner']
+    click[a, give]
+    assert[access.role_in['bo', folder] eq 'owner']
+    assert['bo' in html[a]]
+    b = app[render, wide = true]
+    change[b, 'reader', map[id = 'cy', name = 'Cy', role = 'member']]
+    assert[not b.may_here]
+    change[b, 'grant_user', 'cy']
+    change[b, 'grant_role', 'editor']
+    click[b, give]
+    assert[access.role_in['cy', folder] eq '', 'a member with no grant grants nothing']
+    c = app[render, wide = true]
+    change[c, 'reader', map[id = 'bo', name = 'Bo', role = 'member']]
+    assert[c.may_here, 'the owner grants']
+    change[c, 'grant_user', 'cy']
+    change[c, 'grant_role', 'editor']
+    click[c, give]
+    assert[access.role_in['cy', folder] eq 'editor']
+    click[a, take['cy']]
+    assert[access.role_in['cy', folder] eq '']
+    gone = rm[workspace.base[]]

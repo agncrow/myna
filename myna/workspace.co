@@ -1,31 +1,103 @@
---- The workspace's own logs, each a Magpie log in the workspace's folder
---- (myna_data/, or MYNA_DATA): the
---- notebooks (a row per version of a cell, keyed by notebook and cell),
---- the runs (a row per run, its position its number), the schedules (a
---- row per notebook) and the settings (a row per key). The tables a
---- notebook's cells write live beside them (myna_data/orders); the
---- workspace's own names begin with an underscore. Every function here is
+--- The workspace's storage: code is files in the project, data is logs in
+--- Magpie (docs/platform.md, The rule). Myna's own folder (`myna_data/`,
+--- or MYNA_DATA) holds the workspace's records — the projects opened
+--- (`_projects`), the users and their grants — and the scratch project,
+--- `scratch/`, which is the project worked in while none is open. A
+--- project is a folder with a `crowfile` and a manifest, `myna.json`: its
+--- notebooks are `notebooks/<name>.co` (cells marked by `--- %%` lines),
+--- its saved queries `queries/<name>.json`, its dashboards, its schedules
+--- and its settings the manifest's; its data folder (`data/` unless the
+--- manifest says otherwise) holds the logs its programs and notebooks
+--- write, the runs (`_runs`), the tiles' kept answers (`_answers` and
+--- `.tiles/`) and the experiments and models. Every function here is
 --- handed what it reads and answers values, so the pages and the
 --- scheduler call them alike.
 use frame, magpie
 
---- the workspace's folder: MYNA_DATA where it is set (inside this
---- checkout, so a cell's program finds the packages it imports), else
+--- ---- the folders ----
+
+--- Myna's own folder: MYNA_DATA where it is set (inside this checkout, so
+--- the scratch project's programs find the packages it installed), else
 --- myna_data
-fn home[]
+fn base[]
     return env['MYNA_DATA', 'myna_data']
+
+--- the open project's folder, '' where none is open (the pointer
+--- `.project` in Myna's own folder; myna/projects.co writes it)
+fn project[]
+    t = read['`base[]`/.project']
+    if not t.ok
+        return ''
+    return trim[t]
+
+--- the folder the code is in: the open project's, else the scratch
+--- project's
+fn code[]
+    p = project[]
+    if p ne ''
+        return p
+    return '`base[]`/scratch'
+
+--- the data folder: the manifest's `data` (or `workspace`, as the first
+--- manifests said it), `data` unless given; a path outside the project
+--- is not taken
+fn _data_of[j]
+    d = _field[j, 'data']
+    if d eq ''
+        d = _field[j, 'workspace']
+    if d eq '' or not _inside[d]
+        return 'data'
+    return d
+
+--- whether a path lies inside the project: relative, no step upward
+fn _inside[path]
+    if path eq '' or starts[path, '/'] or starts[path, '.']
+        return false
+    for piece in split[path, '/']
+        if piece eq '..' or piece eq ''
+            return false
+    return true
+
+--- the data folder of the code: where the logs are
+fn home[]
+    c = code[]
+    j = _manifest_json[c]
+    if not j.ok
+        return '`c`/data'
+    return '`c`/`_data_of[j]`'
 
 fn _at[name]
     return '`home[]`/`name`'
 
+--- a table's folder in the data folder, as Magpie's verbs take it
+fn at[name]
+    return _at[name]
+
+--- the folders made where they are not yet: the code's, its notebooks and
+--- queries, its data folder; and, for the scratch project, a crowfile, a
+--- manifest and the link to the packages Myna's checkout installed
 fn ready[]
+    c = code[]
+    if not exists[c]
+        made = mkdir[c]
+    for folder_name in ['notebooks', 'queries']
+        if not exists['`c`/`folder_name`']
+            made = mkdir['`c`/`folder_name`']
     if not exists[home[]]
         made = mkdir[home[]]
+    if project[] eq ''
+        if not exists['`c`/crowfile']
+            w = write['`c`/crowfile', 'name = \'scratch\'\n']
+        if not exists['`c`/myna.json']
+            w = write['`c`/myna.json', '{\n  "name": "Scratch",\n  "about": "the notebooks, queries and dashboards made while no project is open",\n  "data": "data"\n}\n']
+        if not exists['`c`/crow_modules']
+            linked = shell['ln -s ../../crow_modules \'`c`/crow_modules\'']
 
 --- whether the folder is a test's own: a test removes the workspace it
---- made, and must never remove the one people work in
+--- made, and must never remove the one people work in, nor a project's
+--- (while a project is open the workspace is never a test's)
 fn scratch[]
-    return home[] ne 'myna_data'
+    return base[] ne 'myna_data' and project[] eq ''
 
 --- a number the logs hold (an id, a position, seconds) as an int held in
 --- 64 bits: each lies far below 2^62, and `int` of a cell answers an int
@@ -55,125 +127,653 @@ fn _empty[dir]
         return true
     return h lt 0
 
---- the newest version of every live cell of one notebook, in cell order
-fn _live[name]
-    f = magpie.latest[_at['_notebooks']]
-    if not f.ok
-        return f
-    mine = f[f.notebook eq name]
-    if not mine.ok
-        return mine
-    alive = mine[mine.live eq true]
-    if not alive.ok
-        return alive
-    return sort[alive, 'cell']
+--- ---- the manifest ----
 
---- the notebooks that hold a live cell, by name
-fn names[]
-    v = _names[]
+--- a tile of a dashboard: its title, how it is drawn (bars, number,
+--- table) and its query (the Query page's fields, each text)
+struct Tile [title, draw, query]
+
+--- a dashboard: its name, the program Run runs ('' for none), what it is,
+--- its parameters' names and defaults, every how many seconds the
+--- scheduler refreshes it (0, never), and its tiles
+struct Board [name, program, about, param_names, param_defaults, every, tiles]
+
+--- a notebook's schedule: every how many seconds it runs, since when
+struct Schedule [notebook, every, since]
+
+--- a project's manifest: its name, what it is, its data folder, the
+--- programs it compiles, its dashboards, its schedules and its settings
+--- (a map of text)
+struct Manifest [name, about, data, programs, dashboards, jobs, settings]
+
+--- a field of a parsed object as text, '' where it is missing
+fn _field[j, key]
+    if key not in j
+        return ''
+    v = j[key]
     if not v.ok
+        return ''
+    return '`v`'
+
+--- a list of texts a parsed object holds under a key
+fn _texts[j, key]
+    found = []
+    if key not in j
+        return found
+    xs = j[key]
+    if not xs.ok
+        return found
+    for x in xs
+        found = push[found, '`x`']
+    return found
+
+--- a field of each object of a list a parsed object holds
+fn _each[j, list_key, key]
+    found = []
+    if list_key not in j
+        return found
+    xs = j[list_key]
+    if not xs.ok
+        return found
+    for x in xs
+        found = push[found, _field[x, key]]
+    return found
+
+fn _whole[text, default]
+    n = int[trim[text]]
+    if not n.ok
+        return default
+    return n
+
+--- the keys a query has, in the order the manifest writes them
+fn query_keys[]
+    return ['verb', 'table', 'by', 'of', 'how', 'on', 'op', 'value', 'words', 'column', 'k', 'columns']
+
+--- a query as a parsed object holds it
+fn _query_in[tj]
+    m = map[verb = '']
+    for key in query_keys[]
+        m = set[m, key, _field[tj, key]]
+    return m
+
+fn _tiles_in[b]
+    found = []
+    if 'tiles' not in b
+        return found
+    xs = b['tiles']
+    if not xs.ok
+        return found
+    for x in xs
+        found = push[found, Tile[_field[x, 'title'], _field[x, 'draw'], _tile_query[x]]]
+    return found
+
+--- a tile's query as the manifest holds it, empty where it has none
+fn _tile_query[x]
+    if 'query' not in x
+        return map[verb = '']
+    tq = x['query']
+    if not tq.ok
+        return map[verb = '']
+    return _query_in[tq]
+
+fn _board_in[b]
+    return Board[_field[b, 'name'], _field[b, 'program'], _field[b, 'about'], _each[b, 'params', 'name'], _each[b, 'params', 'default'], _whole[_field[b, 'every'], 0], _tiles_in[b]]
+
+fn _boards_in[j]
+    found = []
+    if 'dashboards' not in j
+        return found
+    xs = j['dashboards']
+    if not xs.ok
+        return found
+    for x in xs
+        found = push[found, _board_in[x]]
+    return found
+
+fn _jobs_in[j]
+    found = []
+    if 'jobs' not in j
+        return found
+    xs = j['jobs']
+    if not xs.ok
+        return found
+    for x in xs
+        found = push[found, Schedule[_field[x, 'notebook'], _whole[_field[x, 'every'], 0], _field[x, 'since']]]
+    return found
+
+--- the settings a manifest holds: the ones Myna knows (the workspace's
+--- name, the time limit, each dashboard's parameters), as a map of text
+fn _setting_keys[boards]
+    found = ['workspace', 'limit']
+    for b in boards
+        found = push[found, 'params · `b.name`']
+    return found
+
+fn _settings_in[j, boards]
+    m = map[]
+    if 'settings' not in j
+        return m
+    s = j['settings']
+    if not s.ok
+        return m
+    for key in _setting_keys[boards]
+        if key in s
+            m = set[m, key, _field[s, key]]
+    return m
+
+--- a folder's manifest as JSON, parsed (an empty object where there is
+--- none); the parse's failure where it is not JSON
+fn _manifest_json[folder]
+    t = read['`folder`/myna.json']
+    if not t.ok
+        return json['{}']
+    return json[t]
+
+--- a folder's manifest; an empty one where the file is missing or is
+--- not JSON
+fn manifest_of[folder]
+    j = _manifest_json[folder]
+    if not j.ok
+        return Manifest['', '', 'data', [], [], [], map[]]
+    boards = _boards_in[j]
+    return Manifest[_field[j, 'name'], _field[j, 'about'], _data_of[j], _texts[j, 'programs'], boards, _jobs_in[j], _settings_in[j, boards]]
+
+--- the code's manifest
+fn current_manifest[]
+    return manifest_of[code[]]
+
+--- text as JSON writes it, in quotes
+fn _jtext[s]
+    out = replace[s, '\\', '\\\\']
+    out = replace[out, '"', '\\"']
+    out = replace[out, '\n', '\\n']
+    out = replace[out, '\r', '\\r']
+    out = replace[out, '\t', '\\t']
+    return '"`out`"'
+
+fn _jtexts[texts]
+    quoted = for t in texts
+        _jtext[t]
+    inner = join[quoted, ', ']
+    return '[`inner`]'
+
+--- a query as JSON, its fields in order, the empty ones left out
+fn query_json[q]
+    parts = []
+    for key in query_keys[]
+        if key in q
+            v = '`q[key]`'
+            if v ne ''
+                parts = push[parts, '`_jtext[key]`: `_jtext[v]`']
+    inner = join[parts, ', ']
+    return '{`inner`}'
+
+fn _tile_json[t]
+    return '        {"title": `_jtext[t.title]`, "draw": `_jtext[t.draw]`, "query": `query_json[t.query]`}'
+
+fn _board_json[b]
+    params = []
+    for i in range[len[b.param_names]]
+        d = ''
+        if i lt len[b.param_defaults]
+            d = b.param_defaults[i]
+        params = push[params, '{"name": `_jtext[b.param_names[i]]`, "default": `_jtext[d]`}']
+    tiles = for t in b.tiles
+        _tile_json[t]
+    params_inner = join[params, ', ']
+    lines = ['    {', '      "name": `_jtext[b.name]`,', '      "program": `_jtext[b.program]`,', '      "about": `_jtext[b.about]`,', '      "every": `b.every`,', '      "params": [`params_inner`],']
+    if len[tiles] eq 0
+        lines = push[lines, '      "tiles": []']
+    else
+        lines = push[lines, '      "tiles": [']
+        lines = push[lines, join[tiles, ',\n']]
+        lines = push[lines, '      ]']
+    lines = push[lines, '    }']
+    return join[lines, '\n']
+
+fn _job_json[s]
+    return '    {"notebook": `_jtext[s.notebook]`, "every": `s.every`, "since": `_jtext[s.since]`}'
+
+--- the manifest as JSON, laid out for a reader
+fn manifest_json[m]
+    boards = for b in m.dashboards
+        _board_json[b]
+    jobs = for s in m.jobs
+        _job_json[s]
+    settings = []
+    for key in sort[keys[m.settings]]
+        settings = push[settings, '    `_jtext[key]`: `_jtext[m.settings[key]]`']
+    lines = ['{', '  "name": `_jtext[m.name]`,', '  "about": `_jtext[m.about]`,', '  "data": `_jtext[m.data]`,', '  "programs": `_jtexts[m.programs]`,']
+    lines = push[lines, _block['dashboards', boards, ',']]
+    lines = push[lines, _block['jobs', jobs, ',']]
+    if len[settings] eq 0
+        lines = push[lines, '  "settings": {}']
+    else
+        lines = push[lines, '  "settings": {']
+        lines = push[lines, join[settings, ',\n']]
+        lines = push[lines, '  }']
+    lines = push[lines, '}']
+    body = join[lines, '\n']
+    return '`body`\n'
+
+--- a list of the manifest's objects as its lines: `[]` where it is empty
+fn _block[key, items, after]
+    if len[items] eq 0
+        return '  "`key`": []`after`'
+    inner = join[items, ',\n']
+    return '  "`key`": [\n`inner`\n  ]`after`'
+
+--- a manifest written to a folder's myna.json
+fn put_manifest_of[folder, m]
+    return write['`folder`/myna.json', manifest_json[m]]
+
+fn put_manifest[m]
+    return put_manifest_of[code[], m]
+
+--- ---- notebooks: files with cell marks ----
+
+fn notebooks_dir[]
+    return '`code[]`/notebooks'
+
+--- a notebook's name as its file takes it: no slash, no leading dot, at
+--- most eighty characters
+fn good_name[name]
+    n = trim[name]
+    if n eq '' or len[n] gt 80 or starts[n, '.']
+        return false
+    return not ('/' in n)
+
+fn notebook_file[name]
+    return '`notebooks_dir[]`/`trim[name]`.co'
+
+--- the mark a cell begins with
+fn cell_mark[]
+    return '--- %%'
+
+--- a file's text as its cells: the text before the first mark is the
+--- first cell (left out where it is empty and a mark follows), and each
+--- mark begins another; a file with no mark is one cell
+fn cells_of[text]
+    cells = []
+    held = []
+    first = true
+    body = text
+    if ends[body, '\n']
+        body = slice[body, 0, len[body] - 1]
+    for line in split[body, '\n']
+        if starts[line, cell_mark[]]
+            joined = join[held, '\n']
+            if not (first and joined eq '')
+                cells = push[cells, joined]
+            held = []
+            first = false
+        else
+            held = push[held, line]
+    cells = push[cells, join[held, '\n']]
+    return cells
+
+--- cells as a file's text: the first bare, each other under its mark
+fn text_of_cells[sources]
+    parts = []
+    n = 0
+    for s in sources
+        if n eq 0
+            parts = push[parts, s]
+        else
+            parts = push[parts, '`cell_mark[]`\n`s`']
+        n = n + 1
+    body = join[parts, '\n']
+    return '`body`\n'
+
+--- the notebooks, by name: every .co file of notebooks/
+fn names[]
+    found = []
+    entries = ls[notebooks_dir[]]
+    if not entries.ok
+        return found
+    for e in entries
+        if ends[e, '.co'] and not starts[e, '.']
+            found = push[found, slice[e, 0, len[e] - 3]]
+    return sort[found]
+
+--- a notebook's path in the code, `notebooks/<name>.co`
+fn notebook_path[name]
+    return 'notebooks/`trim[name]`.co'
+
+--- whether a path names a file of the code: relative, no step upward,
+--- no dot-folder, not the data folder's, the packages' or the builds'
+fn good_path[path]
+    p = trim[path]
+    if not _inside[p]
+        return false
+    pieces = split[p, '/']
+    for piece in pieces
+        if starts[piece, '.']
+            return false
+    top = pieces[0]
+    if top eq 'crow_modules' or top eq 'target' or top eq 'bin'
+        return false
+    return top ne _data_of[_manifest_json_or_empty[code[]]]
+
+fn _manifest_json_or_empty[folder]
+    j = _manifest_json[folder]
+    if not j.ok
+        return json['{}']
+    return j
+
+--- a file of the code, read: its text, or why not
+fn text_at[path]
+    if not good_path[path]
+        return error['`path` is not a file of the project', 'myna']
+    return read['`code[]`/`trim[path]`']
+
+--- a file of the code written whole (its folders made)
+fn put_text_at[path, text]
+    if not good_path[path]
+        return error['`path` is not a file of the project', 'myna']
+    p = trim[path]
+    pieces = split[p, '/']
+    if len[pieces] gt 1
+        up = join[slice[pieces, 0, len[pieces] - 1], '/']
+        made = shell['mkdir -p \'`code[]`/`up`\'']
+    return write['`code[]`/`p`', text]
+
+--- a file of the code removed
+fn remove_at[path]
+    if not good_path[path]
+        return error['`path` is not a file of the project', 'myna']
+    return rm['`code[]`/`trim[path]`']
+
+--- a file's cells, in order; none where there is no file
+fn cells_at[path]
+    t = text_at[path]
+    if not t.ok
         return []
-    return v
+    return cells_of[t]
 
-fn _names[]
-    seen = map[]
-    if _empty[_at['_notebooks']]
-        return sort[keys[seen]]
-    f = magpie.latest[_at['_notebooks']]
-    if not f.ok
-        return sort[keys[seen]]
-    alive = f[f.live eq true]
-    if not alive.ok
-        return sort[keys[seen]]
-    for n in alive.notebook
-        seen = set[seen, text_of[n], true]
-    return sort[keys[seen]]
-
---- a notebook's cells: their ids and their sources, in one order
-fn ids[name]
-    found = []
-    if _empty[_at['_notebooks']]
-        return found
-    r = _live[name]
-    if not r.ok
-        return found
-    found = for c in r.cell
-        small[c]
-    return found
-
-fn sources[name]
-    found = []
-    if _empty[_at['_notebooks']]
-        return found
-    r = _live[name]
-    if not r.ok
-        return found
-    found = for s in r.source
-        text_of[s]
-    return found
-
---- the id a new cell of the notebook takes: one past every id it ever
---- held, so a deleted cell's id is never taken again
-fn next_id[name]
-    top = -1
-    if _empty[_at['_notebooks']]
-        return 0
-    f = magpie.latest[_at['_notebooks']]
-    if not f.ok
-        return 0
-    mine = f[f.notebook eq name]
-    if not mine.ok
-        return 0
-    for c in mine.cell
-        if small[c] gt top
-            top = small[c]
-    return top + 1
-
---- a version of a cell written: its source, whether it is live, and when
-fn put_cell[name, cell, source, live, at]
-    return magpie.batch[_at['_notebooks'], frame.new[notebook = [name], cell = [cell], source = [source], live = [live], at = [at]], by = ['notebook', 'cell']]
-
---- every version of a notebook's cells, newest first
-fn versions[name]
-    empty = frame.new[version = [0], at = [''], cell = [0], state = [''], change = [''], source = ['']]
-    none = empty[empty.cell lt 0]
-    if _empty[_at['_notebooks']]
-        return none
-    f = magpie.scan[_at['_notebooks']]
-    if not f.ok
-        return none
-    mine = f[f.notebook eq name]
-    if not mine.ok
-        return none
-    changes = for s in mine.source
-        _preview[text_of[s]]
-    ats = for a in mine.at
-        short_at[text_of[a]]
-    states = for l in mine.live
-        _state_of[l]
-    shown = frame.new[version = mine._pos, at = ats, cell = mine.cell, state = states, change = changes, source = mine.source]
-    return sort[shown, 'version', desc = true]
-
---- a version's cell as it was left: saved, or deleted by that version
-fn _state_of[live]
+--- a cell of a file written: its source put in its place (the place after
+--- the last adds a cell), or, `live` false, taken out; the file is
+--- written whole, and removed with its last cell. Answers how many cells
+--- the file holds, or why nothing was written
+fn put_cell_at[path, cell, source, live]
+    if not good_path[path]
+        return error['`path` is not a file of the project', 'myna']
+    cells = cells_at[path]
+    n = len[cells]
     if live
-        return 'saved'
-    return 'deleted'
+        if cell lt 0 or cell gt n
+            return error['The file has no cell `cell`', 'myna']
+        if cell eq n
+            cells = push[cells, source]
+        else
+            cells = concat[concat[slice[cells, 0, cell], [source]], slice[cells, cell + 1, n]]
+    else
+        if cell lt 0 or cell gte n
+            return error['The file has no cell `cell`', 'myna']
+        cells = concat[slice[cells, 0, cell], slice[cells, cell + 1, n]]
+    if len[cells] eq 0
+        gone = remove_at[path]
+        return 0
+    w = put_text_at[path, text_of_cells[cells]]
+    if not w.ok
+        return error['The file was not written: `w.reason`', 'myna']
+    return len[cells]
+
+--- every file of the code the Code page lists: the notebooks first, then
+--- the rest in their folders (sources, the manifest, the crowfile, styles,
+--- text), the data folder, the packages, the builds and dot-folders left
+--- out; at most 2000 files, 8 folders deep
+fn code_files[]
+    found = []
+    todo = ['']
+    depths = [0]
+    while len[todo] gt 0 and len[found] lt 2000
+        rel = todo[len[todo] - 1]
+        depth = depths[len[depths] - 1]
+        todo = pop[todo]
+        depths = pop[depths]
+        at = code[]
+        if rel ne ''
+            at = '`code[]`/`rel`'
+        entries = ls[at]
+        if entries.ok
+            folders = []
+            for e in sort[entries]
+                p = e
+                if rel ne ''
+                    p = '`rel`/`e`'
+                inner = ls['`code[]`/`p`']
+                if inner.ok
+                    if good_path[p] and depth lt 8
+                        folders = push[folders, p]
+                else
+                    if good_path[p] and _listed_file[e]
+                        found = push[found, p]
+            i = len[folders] - 1
+            while i gte 0
+                todo = push[todo, folders[i]]
+                depths = push[depths, depth + 1]
+                i = i - 1
+    books = []
+    rest = []
+    for p in sort[found]
+        if starts[p, 'notebooks/']
+            books = push[books, p]
+        else
+            rest = push[rest, p]
+    return concat[books, rest]
+
+--- the files the Code page edits, by their endings
+fn _listed_file[name]
+    if name eq 'crowfile' or name eq 'crow.lock'
+        return true
+    for ending in ['.co', '.json', '.md', '.css', '.js', '.html', '.txt', '.sh', '.csv', '.toml', '.yml', '.yaml']
+        if ends[name, ending]
+            return true
+    return false
+
+--- a notebook's cells' sources, in order; none where there is no file
+fn sources[name]
+    return cells_at[notebook_path[name]]
+
+--- the key a run or a schedule is kept under: a notebook's name, or any
+--- other file's path; the cells of the file the key names
+fn key_of[path]
+    p = trim[path]
+    if starts[p, 'notebooks/'] and ends[p, '.co'] and len[split[p, '/']] eq 2
+        return slice[p, 10, len[p] - 3]
+    return p
+
+fn sources_of_key[key]
+    if '/' in key or ends[key, '.co']
+        return cells_at[key]
+    return sources[key]
+
+--- a notebook's cells' ids: their places
+fn ids[name]
+    return range[len[sources[name]]]
+
+--- the id a new cell of the notebook takes: the place after its last
+fn next_id[name]
+    return len[sources[name]]
+
+--- a cell written: its source put in its place (the place after the last
+--- adds a cell), or, `live` false, taken out; the file is written whole,
+--- and removed with its last cell. Answers how many cells the notebook
+--- holds, or why nothing was written
+fn put_cell[name, cell, source, live, at]
+    if not good_name[name]
+        return error['A notebook\'s name is up to eighty characters, with no slash', 'myna']
+    return put_cell_at[notebook_path[name], cell, source, live]
+
+--- a notebook's file written whole (a version restored)
+fn put_notebook_text[name, text]
+    if not good_name[name]
+        return error['A notebook\'s name is up to eighty characters, with no slash', 'myna']
+    return put_text_at[notebook_path[name], text]
+
+--- a notebook removed: its file
+fn remove_notebook[name]
+    if not good_name[name]
+        return error['A notebook\'s name is up to eighty characters, with no slash', 'myna']
+    return remove_at[notebook_path[name]]
+
+--- a file's versions: its commits, newest first — the commit, when, and
+--- its message — where the code is in git; none otherwise
+fn versions_at[path]
+    empty = frame.new[version = [''], at = [''], change = ['']]
+    none = empty[empty.version eq 'none']
+    if not good_path[path] or not in_git[]
+        return none
+    r = shell['cd \'`code[]`\' && git log --format=%h%x1f%ci%x1f%s -- \'`trim[path]`\' 2>/dev/null']
+    if not r.ok
+        return none
+    if r.status ne 0 or trim[r.stdout] eq ''
+        return none
+    hashes = []
+    ats = []
+    changes = []
+    for line in split[trim[r.stdout], '\n']
+        pieces = split[line, char[31]]
+        if len[pieces] eq 3
+            hashes = push[hashes, pieces[0]]
+            ats = push[ats, pieces[1]]
+            changes = push[changes, pieces[2]]
+    if len[hashes] eq 0
+        return none
+    return frame.new[version = hashes, at = ats, change = changes]
+
+fn versions[name]
+    return versions_at[notebook_path[name]]
+
+--- a file's text as a commit held it
+fn version_text_at[path, version]
+    if not good_path[path]
+        return error['`path` is not a file of the project', 'myna']
+    if not in_git[]
+        return error['The code is not in git', 'myna']
+    v = trim[version]
+    for ch in split[v, '']
+        if ch not in 'abcdef0123456789'
+            return error['A version is a commit\'s hash', 'myna']
+    r = shell['cd \'`code[]`\' && git show \'`v`:`trim[path]`\' 2>/dev/null']
+    if not r.ok
+        return r
+    if r.status ne 0
+        return error['There is no version `v` of `path`', 'myna']
+    --- (the shell's answer loses the file's last line break)
+    out = r.stdout
+    if not ends[out, '\n']
+        return '`out`\n'
+    return out
+
+fn version_text[name, version]
+    return version_text_at[notebook_path[name], version]
+
+--- ---- git, over the code ----
+
+--- whether the code is a git repository of its own: its folder is the
+--- repository's top (the scratch project lies inside Myna's checkout,
+--- which is not its repository)
+fn in_git[]
+    r = shell['cd \'`code[]`\' && git rev-parse --show-toplevel 2>/dev/null']
+    if not r.ok
+        return false
+    if r.status ne 0
+        return false
+    top = trim[r.stdout]
+    here = shell['cd \'`code[]`\' && pwd -P']
+    if not here.ok
+        return false
+    return top eq trim[here.stdout]
+
+--- the branch the code is on, '' where it is not in git
+fn git_branch[]
+    if not in_git[]
+        return ''
+    r = shell['cd \'`code[]`\' && git rev-parse --abbrev-ref HEAD 2>/dev/null']
+    if not r.ok
+        return ''
+    if r.status ne 0
+        return ''
+    return trim[r.stdout]
+
+--- what git would commit: a line per changed file, as `git status
+--- --short` writes them; '' where nothing changed
+fn git_status[]
+    if not in_git[]
+        return ''
+    r = shell['cd \'`code[]`\' && git status --short --untracked-files=all 2>/dev/null']
+    if not r.ok
+        return ''
+    if r.status ne 0
+        return ''
+    return trim[r.stdout]
+
+--- a file's changes against the last commit
+fn git_diff[path]
+    if not good_path[path] or not in_git[]
+        return ''
+    r = shell['cd \'`code[]`\' && git diff --no-color -- \'`trim[path]`\' 2>/dev/null']
+    if not r.ok
+        return ''
+    if r.status ne 0
+        return ''
+    return r.stdout
+
+--- a repository made of the code
+fn git_init[]
+    r = shell['cd \'`code[]`\' && git init -q 2>&1']
+    if not r.ok
+        return error['git init did not run', 'myna']
+    if r.status ne 0
+        return error['git init failed: `r.stdout`', 'myna']
+    return 1
+
+--- every change committed with the message; answers what git said
+fn git_commit[message]
+    if not in_git[]
+        return error['The code is not in git: Init makes a repository', 'myna']
+    m = trim[message]
+    if m eq ''
+        return error['A commit needs a message', 'myna']
+    q = '\''
+    safe = replace[m, q, '']
+    r = shell['cd \'`code[]`\' && git add -A && git commit -q -m \'`safe`\' 2>&1']
+    if not r.ok
+        return error['git commit did not run', 'myna']
+    if r.status ne 0
+        return error['git commit failed: `trim[r.stdout]`', 'myna']
+    return 1
+
+--- the remote's commits brought in, and the code's pushed
+fn git_pull[]
+    if not in_git[]
+        return error['The code is not in git', 'myna']
+    r = shell['cd \'`code[]`\' && git pull --ff-only 2>&1']
+    if not r.ok
+        return error['git pull did not run', 'myna']
+    if r.status ne 0
+        return error['git pull failed: `trim[r.stdout]`', 'myna']
+    return trim[r.stdout]
+
+fn git_push[]
+    if not in_git[]
+        return error['The code is not in git', 'myna']
+    r = shell['cd \'`code[]`\' && git push 2>&1']
+    if not r.ok
+        return error['git push did not run', 'myna']
+    if r.status ne 0
+        return error['git push failed: `trim[r.stdout]`', 'myna']
+    return trim[r.stdout]
+
+--- ---- runs: a log of the data folder ----
 
 --- a moment written as ISO text, shown short: its date and time, in UTC
 fn short_at[at]
     if len[at] lt 19
         return at
     return '`slice[at, 0, 10]` `slice[at, 11, 19]` UTC'
-
---- a cell's first line, cut to sixty characters, for a list of versions
-fn _preview[source]
-    first = split[source, '\n'][0]
-    if len[split[source, '\n']] gt 1
-        first = '`first` …'
-    if len[first] gt 60
-        return '`slice[first, 0, 60]`…'
-    return first
 
 --- a run written: what ran, when, who asked, how it went, and what it
 --- printed; answers its position, the run's number
@@ -246,74 +846,39 @@ fn _last_scheduled[name]
         found = text_of[c]
     return found
 
---- a notebook's schedule: every how many seconds it runs (0, never) and
---- since when
+--- ---- schedules: the manifest's jobs ----
+
+--- a notebook's schedule written: every how many seconds it runs (0,
+--- never: the job is taken out) and since when
 fn put_schedule[name, every, since]
-    return magpie.batch[_at['_schedules'], frame.new[notebook = [name], every = [every], since = [since]], by = ['notebook']]
+    m = current_manifest[]
+    kept = []
+    for s in m.jobs
+        if s.notebook ne name
+            kept = push[kept, s]
+    if every gt 0
+        kept = push[kept, Schedule[name, every, since]]
+    m.jobs = kept
+    return put_manifest[m]
 
 fn every[name]
-    v = _every[name]
-    if not v.ok
-        return 0
-    return v
-
-fn _every[name]
-    if _empty[_at['_schedules']]
-        return 0
-    f = magpie.latest[_at['_schedules']]
-    if not f.ok
-        return 0
-    mine = f[f.notebook eq name]
-    if not mine.ok
-        return 0
-    if len[mine] eq 0
-        return 0
-    found = 0
-    for c in mine.every
-        found = small[c]
-    return found
+    for s in current_manifest[].jobs
+        if s.notebook eq name
+            return s.every
+    return 0
 
 fn since[name]
-    v = _since[name]
-    if not v.ok
-        return ''
-    return v
-
-fn _since[name]
-    if _empty[_at['_schedules']]
-        return ''
-    f = magpie.latest[_at['_schedules']]
-    if not f.ok
-        return ''
-    mine = f[f.notebook eq name]
-    if not mine.ok
-        return ''
-    if len[mine] eq 0
-        return ''
-    found = ''
-    for c in mine.since
-        found = text_of[c]
-    return found
+    for s in current_manifest[].jobs
+        if s.notebook eq name
+            return s.since
+    return ''
 
 --- the notebooks that run on a schedule
 fn scheduled[]
-    v = _scheduled[]
-    if not v.ok
-        return []
-    return v
-
-fn _scheduled[]
     found = []
-    if _empty[_at['_schedules']]
-        return found
-    f = magpie.latest[_at['_schedules']]
-    if not f.ok
-        return found
-    timed = f[f.every gt 0]
-    if not timed.ok
-        return found
-    found = for n in timed.notebook
-        text_of[n]
+    for s in current_manifest[].jobs
+        if s.every gt 0
+            found = push[found, s.notebook]
     return found
 
 --- when a scheduled notebook is next due: its interval after its last
@@ -332,261 +897,245 @@ fn due[name]
         return ''
     return str[t + gap]
 
---- a setting, or its default where none was written
-fn setting[key, default]
-    v = _setting[key, default]
-    if not v.ok
-        return default
-    return v
+--- ---- settings: the manifest's ----
 
-fn _setting[key, default]
-    if _empty[_at['_settings']]
-        return default
-    f = magpie.latest[_at['_settings']]
-    if not f.ok
-        return default
-    mine = f[f.key eq key]
-    if not mine.ok
-        return default
-    if len[mine] eq 0
-        return default
-    found = default
-    for c in mine.value
-        found = text_of[c]
-    return found
+--- a setting, or its default where none was written: the code's
+--- manifest, then the scratch project's (the workspace's name lives
+--- there, whatever project is open)
+fn setting[key, default]
+    m = current_manifest[]
+    if key in m.settings
+        return m.settings[key]
+    if project[] ne ''
+        s = manifest_of['`base[]`/scratch']
+        if key in s.settings
+            return s.settings[key]
+    return default
 
 fn put_setting[key, value]
-    return magpie.batch[_at['_settings'], frame.new[key = [key], value = [value]], by = ['key']]
+    folder = code[]
+    if key eq 'workspace'
+        folder = '`base[]`/scratch'
+    if not exists[folder]
+        made = mkdir[folder]
+    m = manifest_of[folder]
+    m.settings = set[m.settings, key, value]
+    return put_manifest_of[folder, m]
 
---- a table's folder in the workspace, as Magpie's verbs take it
-fn at[name]
-    return _at[name]
+--- ---- saved queries: files ----
+
+fn queries_dir[]
+    return '`code[]`/queries'
+
+fn query_file[name]
+    return '`queries_dir[]`/`trim[name]`.json'
 
 --- a query's field, '' where the map lacks it
 fn _got[q, key]
     if key not in q
         return ''
-    return q[key]
+    return '`q[key]`'
 
---- a saved query, keyed by its name: what it asks, as the Query page's
---- fields hold it (each text); a query removed is written with live false
+--- a saved query written as a file, keyed by its name: what it asks, as
+--- the Query page's fields hold it, and when; `live` false removes it
 fn put_query[name, q, at, live]
-    return magpie.batch[_at['_queries'], frame.new[name = [name], verb = [_got[q, 'verb']], table = [_got[q, 'table']], by = [_got[q, 'by']], of = [_got[q, 'of']], how = [_got[q, 'how']], on = [_got[q, 'on']], op = [_got[q, 'op']], value = [_got[q, 'value']], words = [_got[q, 'words']], column = [_got[q, 'column']], k = [_got[q, 'k']], columns = [_got[q, 'columns']], at = [at], live = [live]], by = ['name']]
+    if not good_name[name]
+        return error['A query\'s name is up to eighty characters, with no slash', 'myna']
+    if not live
+        gone = rm[query_file[name]]
+        return 1
+    if not exists[queries_dir[]]
+        made = mkdir[queries_dir[]]
+    parts = ['  "name": `_jtext[trim[name]]`', '  "at": `_jtext[at]`']
+    for key in query_keys[]
+        v = _got[q, key]
+        if v ne ''
+            parts = push[parts, '  `_jtext[key]`: `_jtext[v]`']
+    body = join[parts, ',\n']
+    w = write[query_file[name], '{\n`body`\n}\n']
+    if not w.ok
+        return error['The query was not written: `w.reason`', 'myna']
+    return 1
 
 --- the saved queries, newest first: their names, what they ask and when
 --- they were saved
 fn saved_queries[]
     empty = frame.new[name = [''], verb = [''], table = [''], at = ['']]
     none = empty[empty.name eq 'none']
-    v = _saved_queries[]
-    if not v.ok
+    entries = ls[queries_dir[]]
+    if not entries.ok
         return none
-    return v
+    names = []
+    verbs = []
+    tables = []
+    ats = []
+    for e in sort[entries]
+        if ends[e, '.json'] and not starts[e, '.']
+            names = push[names, slice[e, 0, len[e] - 5]]
+            fields = _query_fields[slice[e, 0, len[e] - 5]]
+            verbs = push[verbs, fields[0]]
+            tables = push[tables, fields[1]]
+            ats = push[ats, fields[2]]
+    if len[names] eq 0
+        return none
+    return sort[frame.new[name = names, verb = verbs, table = tables, at = ats], 'at', desc = true]
 
-fn _saved_queries[]
-    empty = frame.new[name = [''], verb = [''], table = [''], at = ['']]
-    none = empty[empty.name eq 'none']
-    if _empty[_at['_queries']]
-        return none
-    f = magpie.latest[_at['_queries']]
-    if not f.ok
-        return none
-    alive = f[f.live eq true]
-    if not alive.ok
-        return none
-    names = for c in alive.name
-        text_of[c]
-    verbs = for c in alive.verb
-        text_of[c]
-    tables = for c in alive.table
-        text_of[c]
-    ats = for c in alive.at
-        text_of[c]
-    shown = frame.new[name = names, verb = verbs, table = tables, at = ats]
-    return sort[shown, 'at', desc = true]
+--- a saved query's verb, table and moment, as its file holds them
+fn _query_fields[name]
+    j = _query_file_json[name]
+    if not j.ok
+        return ['', '', '']
+    return [_field[j, 'verb'], _field[j, 'table'], _field[j, 'at']]
+
+fn _query_file_json[name]
+    t = read[query_file[name]]
+    if not t.ok
+        return json['{}']
+    return json[t]
 
 --- one saved query's fields, as put_query took them; an empty map where
---- no live query has the name
+--- there is none of the name. A name that is JSON (a tile's query, kept
+--- in the manifest) is read as the query itself
 fn saved_query[name]
-    v = _saved_query[name]
-    if not v.ok
+    if starts[trim[name], '{']
+        j = json[name]
+        if not j.ok
+            return map[verb = '']
+        return _query_in[j]
+    if not good_name[name]
         return map[verb = '']
-    return v
+    j = _query_file_json[name]
+    if not j.ok
+        return map[verb = '']
+    return _query_in[j]
 
-fn _saved_query[name]
-    found = map[verb = '']
-    if _empty[_at['_queries']]
-        return found
-    f = magpie.latest[_at['_queries']]
-    if not f.ok
-        return found
-    one = f[f.name eq name]
-    if not one.ok
-        return found
-    alive = one[one.live eq true]
-    if not alive.ok
-        return found
-    if len[alive] eq 0
-        return found
-    for key in ['verb', 'table', 'by', 'of', 'how', 'on', 'op', 'value', 'words', 'column', 'k', 'columns']
-        for c in alive.`key`
-            found = set[found, key, text_of[c]]
+--- ---- dashboards: the manifest's ----
+
+--- the dashboards, by name, in the manifest's order
+fn dashboards[]
+    found = for b in current_manifest[].dashboards
+        b.name
     return found
 
---- a dashboard, or one of its tiles, written to the _dashboards log keyed
---- by the dashboard and the tile: tile 0 is the dashboard itself (every
---- how many seconds the scheduler refreshes it, 0 never), 1 and on its
---- tiles (the saved query each shows, drawn as bars, a number or a table,
---- its title and its place); a removed one is written with live false
-fn put_tile[dash, tile, query, draw, title, place, every, live, at]
-    return magpie.batch[_at['_dashboards'], frame.new[dashboard = [dash], tile = [tile], query = [query], draw = [draw], title = [title], place = [place], every = [every], live = [live], at = [at]], by = ['dashboard', 'tile']]
+--- the manifest's dashboard of a name, or an empty one
+fn board_named[name]
+    for b in current_manifest[].dashboards
+        if b.name eq name
+            return b
+    return Board[name, '', '', [], [], 0, []]
 
---- the dashboards, by name
-fn dashboards[]
-    v = _dashboards[]
-    if not v.ok
-        return []
-    return v
-
-fn _dashboards[]
-    found = []
-    if _empty[_at['_dashboards']]
-        return found
-    f = magpie.latest[_at['_dashboards']]
-    if not f.ok
-        return found
-    heads = f[f.tile eq 0]
-    if not heads.ok
-        return found
-    alive = heads[heads.live eq true]
-    if not alive.ok
-        return found
-    found = for n in alive.dashboard
-        text_of[n]
-    return sort[found]
-
---- a dashboard's tiles in their places: the tile's id, the saved query it
---- shows, how it is drawn, its title and its place
+--- a dashboard's tiles in their places: the tile's id (its place, from
+--- 1), its query as JSON (`saved_query` reads it), how it is drawn, its
+--- title and its place
 fn board_tiles[dash]
     empty = frame.new[tile = [0], query = [''], draw = [''], title = [''], place = [0]]
     none = empty[empty.tile lt 0]
-    v = _board_tiles[dash]
-    if not v.ok
+    b = board_named[dash]
+    if len[b.tiles] eq 0
         return none
-    return v
-
-fn _board_tiles[dash]
-    empty = frame.new[tile = [0], query = [''], draw = [''], title = [''], place = [0]]
-    none = empty[empty.tile lt 0]
-    if _empty[_at['_dashboards']]
-        return none
-    f = magpie.latest[_at['_dashboards']]
-    if not f.ok
-        return none
-    mine = f[f.dashboard eq dash]
-    if not mine.ok
-        return none
-    alive = mine[mine.live eq true]
-    if not alive.ok
-        return none
-    tiles = alive[alive.tile gt 0]
-    if not tiles.ok
-        return none
-    ids = for c in tiles.tile
-        small[c]
-    asked = for c in tiles.query
-        text_of[c]
-    draws = for c in tiles.draw
-        text_of[c]
-    titles = for c in tiles.title
-        text_of[c]
-    places = for c in tiles.place
-        small[c]
-    shown = frame.new[tile = ids, query = asked, draw = draws, title = titles, place = places]
-    return sort[shown, 'place']
+    ids = range[len[b.tiles]]
+    places = for i in ids
+        i + 1
+    asked = for t in b.tiles
+        query_json[t.query]
+    draws = for t in b.tiles
+        t.draw
+    titles = for t in b.tiles
+        t.title
+    return frame.new[tile = places, query = asked, draw = draws, title = titles, place = places]
 
 --- every how many seconds a dashboard is refreshed by the scheduler, 0
 --- where it is not
 fn board_every[dash]
-    v = _board_every[dash]
-    if not v.ok
-        return 0
-    return v
+    return board_named[dash].every
 
-fn _board_every[dash]
-    if _empty[_at['_dashboards']]
-        return 0
-    f = magpie.latest[_at['_dashboards']]
-    if not f.ok
-        return 0
-    mine = f[f.dashboard eq dash]
-    if not mine.ok
-        return 0
-    head_row = mine[mine.tile eq 0]
-    if not head_row.ok
-        return 0
-    found = 0
-    for c in head_row.every
-        found = small[c]
-    return found
+--- a dashboard written: made where there is none (its program, what it
+--- is and its parameters kept where there is), with its refresh; `live`
+--- false takes it out of the manifest
+fn put_board[dash, every, live]
+    m = current_manifest[]
+    kept = []
+    found = false
+    for b in m.dashboards
+        if b.name eq dash
+            found = true
+            if live
+                b.every = every
+                kept = push[kept, b]
+        else
+            kept = push[kept, b]
+    if live and not found
+        kept = push[kept, Board[dash, '', '', [], [], every, []]]
+    m.dashboards = kept
+    return put_manifest[m]
 
---- the id a new tile takes: one past every tile any dashboard ever held,
---- so a tile's kept answer is never another's
-fn next_tile[]
-    top = 0
-    if _empty[_at['_dashboards']]
-        return 1
-    f = magpie.latest[_at['_dashboards']]
-    if not f.ok
-        return 1
-    for c in f.tile
-        if small[c] gt top
-            top = small[c]
-    return top + 1
+--- a dashboard's tiles replaced
+fn put_tiles[dash, tiles]
+    m = current_manifest[]
+    kept = []
+    found = false
+    for b in m.dashboards
+        if b.name eq dash
+            found = true
+            b.tiles = tiles
+        kept = push[kept, b]
+    if not found
+        kept = push[kept, Board[dash, '', '', [], [], 0, tiles]]
+    m.dashboards = kept
+    return put_manifest[m]
 
---- where a tile's last answer is kept: a Parquet file beside the logs
---- (a folder whose name begins with a dot is no table)
+--- a tile's key, by which its kept answer is known: its dashboard and
+--- its title
+fn tile_key[dash, title]
+    return '`dash` # `title`'
+
+--- where a tile's last answer is kept: a Parquet file beside the logs,
+--- named by its key's hash (a folder whose name begins with a dot is no
+--- table)
 fn tiles_dir[]
     return _at['.tiles']
 
-fn tile_file[tile]
-    return '`tiles_dir[]`/`tile`.parquet'
+fn tile_file[key]
+    digest = slice[hash[key, 'sha256'], 0, 16]
+    return '`tiles_dir[]`/`digest`.parquet'
 
---- a tile's last refresh written to the _tiles log: when, why it has no
---- answer ('' where it has one) and how many rows the answer had
-fn put_tile_answer[tile, at, problem, rows]
-    return magpie.batch[_at['_tiles'], frame.new[tile = [tile], at = [at], problem = [problem], rows = [rows]], by = ['tile']]
+--- a tile's last refresh written to the _answers log: when, why it has
+--- no answer ('' where it has one) and how many rows the answer had
+fn put_tile_answer[key, at, problem, rows]
+    return magpie.batch[_at['_answers'], frame.new[tile = [key], at = [at], problem = [problem], rows = [rows]], by = ['tile']]
 
---- every tile's last refresh: its id, when, why it has no answer, and
+--- every tile's last refresh: its key, when, why it has no answer, and
 --- how many rows the answer had
 fn tile_answers[]
-    empty = frame.new[tile = [0], at = [''], problem = [''], rows = [0]]
-    none = empty[empty.tile lt 0]
+    empty = frame.new[tile = [''], at = [''], problem = [''], rows = [0]]
+    none = empty[empty.tile eq 'none']
     v = _tile_answers[]
     if not v.ok
         return none
     return v
 
 fn _tile_answers[]
-    empty = frame.new[tile = [0], at = [''], problem = [''], rows = [0]]
-    none = empty[empty.tile lt 0]
-    if _empty[_at['_tiles']]
+    empty = frame.new[tile = [''], at = [''], problem = [''], rows = [0]]
+    none = empty[empty.tile eq 'none']
+    if _empty[_at['_answers']]
         return none
-    f = magpie.latest[_at['_tiles']]
+    f = magpie.latest[_at['_answers']]
     if not f.ok
         return none
-    ids = for c in f.tile
-        small[c]
+    keys_ = for c in f.tile
+        text_of[c]
     ats = for c in f.at
         text_of[c]
     problems = for c in f.problem
         text_of[c]
     counts = for c in f.rows
         small[c]
-    return frame.new[tile = ids, at = ats, problem = problems, rows = counts]
+    return frame.new[tile = keys_, at = ats, problem = problems, rows = counts]
 
---- the tables in the workspace: every Magpie log under myna_data/, the
---- workspace's own (an underscore first) after the notebooks' tables
+--- ---- the tables ----
+
+--- the tables in the data folder: every Magpie log there, the workspace's
+--- own (an underscore first) after the programs' and the notebooks'
 fn tables[]
     found = []
     entries = ls[home[]]
@@ -625,23 +1174,68 @@ fn table_columns[name]
     found = f.columns
     return found
 
-test the_logs_hold_notebooks_runs_schedules_and_settings[]
+--- a file's cells: the text before the first mark is the first cell, a
+--- file without marks is one cell, and the cells written are read back
+test a_notebook_file_is_its_cells[]
+    cells_of['log[1]\n'] eq ['log[1]']
+    cells_of['log[1]\n--- %%\nlog[2]\n'] eq ['log[1]', 'log[2]']
+    cells_of['--- %%\nlog[1]\n--- %% two\nlog[2]\n\nlog[3]\n'] eq ['log[1]', 'log[2]\n\nlog[3]']
+    cells_of[''] eq ['']
+    text_of_cells[['log[1]', 'log[2]']] eq 'log[1]\n--- %%\nlog[2]\n'
+    cells_of[text_of_cells[['a', '', 'c']]] eq ['a', '', 'c']
+
+--- the manifest written is the manifest read: its dashboards, their
+--- tiles and queries, its jobs and its settings
+test the_manifest_is_written_and_read_back[]
     assert[scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[home[]]
+    gone = rm[base[]]
     ready[]
-    assert[names[] eq []]
-    w = put_cell['scratch', 0, 'log[1]', true, '2026-11-04T10:00:00Z']
+    q = map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum']
+    b = Board['Sales', 'jobs/import.co', 'the day\'s sales', ['day'], ['2026-11-07'], 900, [Tile['By shop', 'bars', q], Tile['Rows', 'table', map[verb = 'latest', table = 'orders', k = '10']]]]
+    m = Manifest['Proj', 'a "test"', 'data', ['jobs/import.co'], [b], [Schedule['nightly', 3600, '2026-11-07T00:00:00Z']], map[workspace = 'Lab', limit = '90']]
+    w = put_manifest[m]
     assert[w.ok]
-    w = put_cell['scratch', 1, 'log[2]', true, '2026-11-04T10:00:01Z']
-    w = put_cell['other', 0, 'log[3]', true, '2026-11-04T10:00:02Z']
+    back = current_manifest[]
+    assert[back.name eq 'Proj']
+    assert[back.about eq 'a "test"']
+    assert[back.programs eq ['jobs/import.co']]
+    assert[len[back.dashboards] eq 1]
+    assert[back.dashboards[0].program eq 'jobs/import.co']
+    assert[back.dashboards[0].param_names eq ['day']]
+    assert[back.dashboards[0].every eq 900]
+    assert[len[back.dashboards[0].tiles] eq 2]
+    assert[back.dashboards[0].tiles[0].query['by'] eq 'shop']
+    assert[back.dashboards[0].tiles[1].query['k'] eq '10']
+    assert[back.jobs[0].notebook eq 'nightly']
+    assert[back.jobs[0].every eq 3600]
+    assert[back.settings['workspace'] eq 'Lab']
+    assert[setting['limit', '60'] eq '90']
+    gone = rm[base[]]
+
+--- the notebooks are files, the runs a log, the schedules and settings
+--- the manifest's, and the saved queries files
+test the_files_hold_notebooks_queries_schedules_and_settings[]
+    assert[scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[base[]]
+    ready[]
+    assert[exists['`code[]`/crowfile']]
+    assert[home[] eq '`code[]`/data']
+    assert[names[] eq []]
+    assert[put_cell['scratch', 0, 'log[1]', true, '2026-11-04T10:00:00Z'] eq 1]
+    assert[put_cell['scratch', 1, 'log[2]', true, '2026-11-04T10:00:01Z'] eq 2]
+    assert[put_cell['other', 0, 'log[3]', true, '2026-11-04T10:00:02Z'] eq 1]
+    assert[not put_cell['a/b', 0, 'x', true, ''].ok]
+    assert[not put_cell['scratch', 5, 'x', true, ''].ok]
     assert[names[] eq ['other', 'scratch']]
     assert[ids['scratch'] eq [0, 1]]
     assert[sources['scratch'] eq ['log[1]', 'log[2]']]
-    w = put_cell['scratch', 0, '', false, '2026-11-04T10:00:03Z']
-    assert[ids['scratch'] eq [1]]
-    assert[next_id['scratch'] eq 2]
-    assert[len[versions['scratch']] eq 3]
-    w = put_cell['other', 0, '', false, '2026-11-04T10:00:04Z']
+    t = read[notebook_file['scratch']]
+    assert[t eq 'log[1]\n--- %%\nlog[2]\n']
+    assert[put_cell['scratch', 0, '', false, '2026-11-04T10:00:03Z'] eq 1]
+    assert[sources['scratch'] eq ['log[2]']]
+    assert[next_id['scratch'] eq 1]
+    assert[len[versions['scratch']] eq 0]
+    assert[put_cell['other', 0, '', false, '2026-11-04T10:00:04Z'] eq 0]
     assert[names[] eq ['scratch']]
     r = put_run['scratch', '2026-11-04T10:01:00Z', 'you', 1, 'ok', 12, '2']
     assert[r.ok]
@@ -650,13 +1244,102 @@ test the_logs_hold_notebooks_runs_schedules_and_settings[]
     assert[run_output[r] eq '2']
     assert[last_scheduled['scratch'] eq '']
     s = put_schedule['scratch', 3600, '2026-11-04T10:00:00Z']
+    assert[s.ok]
     assert[every['scratch'] eq 3600]
     assert[scheduled[] eq ['scratch']]
     assert[due['scratch'] eq '2026-11-04T11:00:00Z']
     r = put_run['scratch', '2026-11-04T11:00:05Z', 'schedule', 1, 'ok', 9, '2']
     assert[due['scratch'] eq '2026-11-04T12:00:05Z']
+    s = put_schedule['scratch', 0, '']
+    assert[scheduled[] eq []]
     assert[setting['workspace', 'myna'] eq 'myna']
     p = put_setting['workspace', 'lab']
     assert[setting['workspace', 'myna'] eq 'lab']
-    assert[tables[] eq ['_notebooks', '_runs', '_schedules', '_settings']]
-    gone = rm[home[]]
+    q = put_query['by shop', map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum'], '2026-11-05T10:00:00Z', true]
+    assert[q.ok]
+    assert[exists[query_file['by shop']]]
+    assert[saved_query['by shop']['how'] eq 'sum']
+    assert[saved_query['gone']['verb'] eq '']
+    assert[saved_query['{"verb": "latest", "table": "t"}']['table'] eq 't']
+    listed = saved_queries[]
+    assert[len[listed] eq 1]
+    assert[str[listed.name[0]] eq 'by shop']
+    q = put_query['by shop', map[verb = ''], '', false]
+    assert[len[saved_queries[]] eq 0]
+    assert[tables[] eq ['_runs']]
+    gone = rm[base[]]
+
+--- a dashboard is the manifest's: made, given tiles, refreshed every so
+--- often, and taken out; a tile's answer is kept by its key
+test dashboards_are_the_manifests[]
+    assert[scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[base[]]
+    ready[]
+    assert[dashboards[] eq []]
+    w = put_board['Sales', 0, true]
+    assert[w.ok]
+    assert[dashboards[] eq ['Sales']]
+    assert[board_every['Sales'] eq 0]
+    w = put_tiles['Sales', [Tile['By shop', 'bars', map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum']], Tile['Rows', 'table', map[verb = 'latest', table = 'orders']]]]
+    t = board_tiles['Sales']
+    assert[len[t] eq 2]
+    assert[str[t.title[1]] eq 'Rows']
+    assert[saved_query[str[t.query[0]]]['by'] eq 'shop']
+    w = put_board['Sales', 60, true]
+    assert[board_every['Sales'] eq 60]
+    assert[len[board_tiles['Sales']] eq 2, 'the tiles are kept when the refresh is set']
+    a = put_tile_answer[tile_key['Sales', 'Rows'], '2026-11-07T10:00:00Z', '', 3]
+    assert[a.ok]
+    answers = tile_answers[]
+    assert[len[answers] eq 1]
+    assert[str[answers.tile[0]] eq 'Sales # Rows']
+    assert[ends[tile_file['Sales # Rows'], '.parquet']]
+    w = put_board['Sales', 0, false]
+    assert[dashboards[] eq []]
+    assert[len[board_tiles['Sales']] eq 0]
+    gone = rm[base[]]
+
+--- a file of the code is read, written as cells or as text, listed and
+--- removed; a path outside the code, into a dot-folder, the data folder or
+--- the packages is refused; git over the code: a repository made, a
+--- commit, the status and the versions of a file
+test files_of_the_code_are_edited_and_committed[]
+    assert[scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[base[]]
+    ready[]
+    assert[not good_path['../x.co']]
+    assert[not good_path['/etc/x']]
+    assert[not good_path['.git/config']]
+    assert[not good_path['data/orders']]
+    assert[not good_path['crow_modules/magpie/main.co']]
+    assert[good_path['app/orders.co']]
+    assert[put_text_at['app/orders.co', 'log[1]\n'].ok]
+    assert[text_at['app/orders.co'] eq 'log[1]\n']
+    assert[cells_at['app/orders.co'] eq ['log[1]']]
+    assert[put_cell_at['app/orders.co', 1, 'log[2]', true] eq 2]
+    assert[text_at['app/orders.co'] eq 'log[1]\n--- %%\nlog[2]\n']
+    assert[put_cell['note', 0, 'x = 1', true, ''] eq 1]
+    listed = code_files[]
+    assert['notebooks/note.co' in listed]
+    assert['app/orders.co' in listed]
+    assert['myna.json' in listed]
+    assert['crowfile' in listed]
+    assert[listed[0] eq 'notebooks/note.co', 'the notebooks come first']
+    assert[not in_git[]]
+    assert[git_branch[] eq '']
+    assert[git_status[] eq '']
+    assert[git_init[].ok]
+    assert[in_git[]]
+    assert['app/orders.co' in git_status[]]
+    assert[not git_commit['   '].ok]
+    assert[git_commit['the first'].ok]
+    assert[git_status[] eq '']
+    v = versions_at['app/orders.co']
+    assert[len[v] eq 1]
+    assert[str[v.change[0]] eq 'the first']
+    assert[put_text_at['app/orders.co', 'log[3]\n'].ok]
+    assert['log[3]' in git_diff['app/orders.co']]
+    assert[version_text_at['app/orders.co', str[v.version[0]]] eq 'log[1]\n--- %%\nlog[2]\n']
+    assert[remove_at['app/orders.co'].ok]
+    assert[not text_at['app/orders.co'].ok]
+    gone = rm[base[]]

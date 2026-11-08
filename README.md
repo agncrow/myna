@@ -30,34 +30,67 @@ it serves.
 
 ## The pages
 
-- **Notebooks** (`/`): a notebook is cells of Crow, run top to bottom as
-  one program by the crow on the PATH, in the workspace's folder, so a
-  table a cell writes is a log beside the others. Each cell's output,
-  status and time are shown under it. A stop or a refusal is shown under
-  the cell it names, by the cell's own line, and the cells after it are
-  skipped. The side panel names the variables the cells left and the
-  tables they read and write. Ctrl+Enter runs, Ctrl+S saves and Escape
-  cancels an edit. Every save is a version and every run is kept with its
-  output: History lists both, opens a run's output and restores a
-  version. A notebook can also run on a schedule.
+- **Projects** (`/projects`): open a Crow project's folder by its whole
+  path, and Myna works in that project until you close it. A project is
+  a folder with a `crowfile` and a manifest, `myna.json`, which names
+  its data folder, the programs it compiles, its dashboards, its
+  schedules and its settings; its notebooks are `notebooks/*.co` and its
+  saved queries `queries/*.json`. Code is files in the project, data is
+  logs in its data folder (`docs/platform.md`, The rule). The page lists
+  each program with whether it is compiled. Compile builds every program
+  into the project's `bin/` in the background, where Lory Studio's
+  Compile puts them too, and both stamp each binary with the same
+  fingerprint of the sources. New project makes a folder with a Hello
+  dashboard whose program writes a table, and `git init`. While no
+  project is open, Myna works in its scratch project, `myna_data/scratch`.
+  The format is set out in finchdash's `docs/project-format.md`, and
+  where projects are going — workspaces with users and access, projects
+  as apps built on Myna as a package, the workspace server — in
+  `docs/platform.md`.
+- **Code** (`/`): the project's files in a tree, the notebooks first,
+  each opened in place as a tab. A `.co` file is shown as cells — a
+  notebook is a Crow program, `notebooks/<name>.co`, whose cells are
+  marked by `--- %%` lines, and a file without marks is one cell — or as
+  text; any other file (the manifest, styles, a note) as text. Cells run
+  top to bottom as one program by the crow on the PATH, in the data
+  folder, so a table a cell writes is a log beside the others; each
+  cell's output, status and time are shown under it, a stop or a refusal
+  under the cell it names, and the cells after it are skipped. More runs,
+  tests or type-checks the file whole, its output in the console under
+  the editor, and sets a schedule (kept in the manifest). The side panel
+  names the variables the cells left and the tables they read and write.
+  Ctrl+Enter runs, Ctrl+S saves and Escape cancels an edit. Every save
+  writes the file; every run is kept with its output. History lists the
+  runs and the file's commits and restores one; the Git drawer shows the
+  branch and the changes, makes a repository, commits, pulls and pushes.
 - **Query** (`/query`): one of Magpie's reading verbs over a table, asked
   as a form: the latest rows (the columns named, or all), a summary
   (grouped by columns, a column reduced by sum, count, mean, min, max,
-  std, var, first or last, the rows a predicate admits) or a search of a
-  text column (words, phrases, prefixes `kit*`, fuzzy words `kitchn~`).
+  std, var, first or last, the rows a predicate admits), a search of a
+  text column (words, phrases, prefixes `kit*`, fuzzy words `kitchn~`),
+  or the newest run: the rows a program's newest run wrote to a table
+  that marks each row with its `run`.
   The answer is a table and, for a summary, bars. A query is saved by
-  name in the workspace's `_queries` log and opened again from the list,
+  name as a file, `queries/<name>.json`, and opened again from the list,
   and Open as notebook writes it as the first cell of a new notebook.
 - **Catalog** (`/catalog`): the workspace's tables, each a Magpie log,
-  with their columns and their latest rows; Query this table opens the
-  query page on it.
-- **Dashboards** (`/dashboards`): saved queries side by side as tiles,
-  each drawn as bars, a number or a table. A query is added from the
-  dashboard or pinned from the Query page; tiles are moved and removed in
-  place. Refresh now asks every tile's query again, and a dashboard given
-  an interval (1 min, 15 min, 1 h, 1 d) is refreshed by the scheduler.
-  Each tile's answer is kept as a Parquet file under `.tiles/`, so a
-  dashboard opens without asking its queries.
+  with their columns, their latest rows and who writes them (Myna, the
+  open project or the notebooks); Query this table opens the query page
+  on it.
+- **Dashboards** (`/dashboards`): queries side by side as tiles, each
+  drawn as bars, a number or a table. A dashboard is the manifest's
+  (`myna.json`, `dashboards`): a tile is added from a saved query, here
+  or pinned from the Query page, and holds its query inline; tiles are
+  moved and removed in place, and every change is written to the
+  manifest. Refresh now asks every tile's query again, and a dashboard
+  given an interval (1 min, 15 min, 1 h, 1 d) is refreshed by the
+  scheduler. Each tile's answer is kept as a Parquet file under
+  `data/.tiles/`, so a dashboard opens without asking its queries. A
+  dashboard can name a program. Run runs that program with the
+  dashboard's parameters (`name=value` lines, kept in the manifest's
+  settings), then refreshes the tiles. It runs the binary in `bin/` when
+  one was built from the sources as they are now, and interprets the
+  program otherwise. Each run's output is kept with it on the Jobs page.
 - **Experiments** (`/experiments`): MLflow's tracking. Each experiment's
   runs are shown with their params and metrics, searched in MLflow's
   grammar, sorted, compared and charted. Logged models and traces have
@@ -69,6 +102,14 @@ it serves.
   served at `/serve/:model/:ref/invocations`. Prompts have their own
   tab. All of it is in the book's Part II (`docs/book/src`).
 - **Jobs** (`/jobs`): the scheduler, the schedules and every run.
+- **Users** (`/users`) and **Access** (`/access`), an admin's pages: who
+  may sign in, with a role (an admin does everything; a member what their
+  grants allow), and each project's grants (viewer, editor, owner). A
+  workspace with no users is one person's own: no page asks for a
+  sign-in. Adding the first user, an admin, signs you in as them, and
+  from then on every page asks for a sign-in; a reader with no grant on
+  the open project is told so, and a reader without an editor's grant
+  changes nothing. The design, and what comes next: `docs/platform.md`.
 - **Settings** (`/settings`): the workspace's name, and how long a run may
   take before it is stopped (60 seconds unless set).
 
@@ -84,13 +125,17 @@ when the page asks it to, or when the page has not answered for three
 rounds. `crow run scheduler.co` runs it without a page, until the file
 `myna_data/_scheduler.stop` is written.
 
-## The workspace
+## Myna's folder
 
-Everything Myna keeps is in `myna_data/` beside the program, each piece a
-Magpie log: `_notebooks` (every version of every cell), `_runs` (every
-run and its output), `_queries`, `_schedules`, `_settings`, and the tables the
-notebooks write. `MYNA_DATA` names another folder. It must lie inside
-this checkout, where the programs a notebook runs find `crow_modules/`.
+Myna's own folder is `myna_data/` beside the program (`MYNA_DATA` names
+another; it must lie inside this checkout, where the scratch project's
+programs find `crow_modules/`). It holds the workspace's records, each a
+Magpie log — `_projects`, `_users`, `_grants` — and the scratch project,
+`scratch/`: a project like any other (`crowfile`, `myna.json`,
+`notebooks/`, `queries/`, `data/`) worked in while none is open. A
+project's data folder holds `_runs` (every run and its output),
+`_answers` (each tile's last refresh), the experiments and models, and
+the tables its programs and notebooks write.
 
 ## Tests
 
@@ -114,6 +159,10 @@ a running Myna.
   its output back cell by cell.
 - `myna/workbench.co` is the frame every page shares: the sidebar, the
   top bar and the search.
+- `myna/access.co` is who may do what: the users and their roles, the
+  grants, the sign-in, and the derivations every page reads (the
+  reader, and whether they may read, write or grant); `myna/users.co`
+  and `myna/grants.co` are their pages.
 - `myna/queries.co` runs a query, writes it as a cell's Crow and says
   it in a line; the dashboards read saved queries through it, as Ask
   is to.
@@ -125,7 +174,7 @@ a running Myna.
   them, and `myna/charts.co` draws their charts.
 - `myna/experiments.co`, `myna/runs.co` and `myna/models.co` are their
   pages.
-- `myna/query.co`, `myna/notebooks.co`, `myna/catalog.co`,
+- `myna/query.co`, `myna/code.co`, `myna/catalog.co`,
   `myna/dashboards.co`, `myna/jobs.co` and
   `myna/settings.co` are the pages; `myna/soon.co` holds the pages not
   built yet.

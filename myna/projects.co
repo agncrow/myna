@@ -1,0 +1,582 @@
+--- Projects: a Crow project's folder opened in Myna. A project is a
+--- folder with a `crowfile` and a manifest, `myna.json`
+--- (finchdash/docs/project-format.md; myna/workspace.co reads it): its
+--- name, its data folder (the folder of its Magpie logs), the programs
+--- it compiles and its dashboards — each a program Run runs with its
+--- parameters, and tiles of queries over the tables the program writes.
+--- Opening a project points Myna at its folder (`.project` beside the
+--- registry) and registers it in `_projects`; its notebooks, queries and
+--- dashboards are then the project's files, and Myna's own logs
+--- (`_runs`, `_answers`, …) live in its data folder.
+---
+--- A program is compiled when `bin/<name>` is there and its stamp holds
+--- the fingerprint of the project's sources as they are now (computed as
+--- Lory Studio computes it, so either reads the other's builds); Run runs
+--- the binary then, and interprets the program otherwise.
+use frame, magpie
+use myna.workspace
+use myna.queries
+use myna.tiles
+
+--- a project as the registry holds it: its name, its folder, its data
+--- folder (relative to it) and what it is
+struct Project [name, folder, data, about]
+
+--- a program of the manifest: its path, its binary's name, whether the
+--- binary is there and whether its stamp is the sources' fingerprint
+struct Program [program, binary, compiled, fresh]
+
+--- what a run did: how (compiled, interpreted), its exit status, how long
+--- it took (ms) and its output
+struct Ran [mode, status, ms, output]
+
+--- a compile under way or done: whether it runs, its exit code (-1 while
+--- it runs or where none ran) and the end of its log
+struct Compiling [running, code, log]
+
+--- ---- the registry and the open project ----
+
+fn _registry[]
+    return '`workspace.base[]`/_projects'
+
+fn _pointer[name]
+    return '`workspace.base[]`/`name`'
+
+--- the folder of the open project, '' where none is open
+fn current[]
+    t = read[_pointer['.project']]
+    if not t.ok
+        return ''
+    return trim[t]
+
+--- text quoted for the shell
+fn sq[text]
+    q = '\''
+    escaped = replace[text, q, '\'\\\'\'']
+    return '`q``escaped``q`'
+
+--- a folder's path without a trailing slash
+fn _bare[folder]
+    f = trim[folder]
+    while len[f] gt 1 and ends[f, '/']
+        f = slice[f, 0, len[f] - 1]
+    return f
+
+fn _base_name[folder]
+    last = ''
+    for piece in split[_bare[folder], '/']
+        if piece ne ''
+            last = piece
+    return last
+
+--- the manifest's text, '' where the folder has none
+--- whether a path in a project stays inside it: relative, without `..`
+fn inside[path]
+    if path eq '' or starts[path, '/']
+        return false
+    for part in split[path, '/']
+        if part eq '..'
+            return false
+    return true
+
+--- a project read from its folder: the manifest's name (the folder's own
+--- where it gives none), its data folder (`data` unless given) and what
+--- it is
+fn project_of[folder]
+    f = _bare[folder]
+    m = workspace.manifest_of[f]
+    name = m.name
+    if name eq ''
+        name = _base_name[f]
+    return Project[name, f, m.data, m.about]
+
+--- every project the registry holds, newest opened first
+fn projects[]
+    found = []
+    h = magpie.head[_registry[]]
+    if not h.ok
+        return found
+    if h lt 0
+        return found
+    f = magpie.latest[_registry[]]
+    if not f.ok
+        return found
+    kept = sort[f, 'at', desc = true]
+    if not kept.ok
+        return found
+    for i in range[len[kept]]
+        if workspace.text_of[kept.live[i]] eq 'true'
+            found = push[found, Project[workspace.text_of[kept.name[i]], workspace.text_of[kept.folder[i]], workspace.text_of[kept.workspace[i]], workspace.text_of[kept.about[i]]]]
+    return found
+
+fn _register[p, live]
+    if not exists[workspace.base[]]
+        made = mkdir[workspace.base[]]
+    --- (the registry's `workspace` column is the data folder: the first
+    --- registries named it so)
+    return magpie.batch[_registry[], frame.new[folder = [p.folder], name = [p.name], workspace = [p.data], about = [p.about], at = [str[now[]]], live = ['`live`']], by = ['folder']]
+
+--- a project opened: Myna pointed at its folder and the project
+--- registered; answers the project, or why it was not opened
+fn open_folder[folder]
+    f = _bare[folder]
+    if not starts[f, '/']
+        return error['Name the folder by its whole path, from /', 'myna']
+    listed = ls[f]
+    if not listed.ok
+        return error['There is no folder `f`', 'myna']
+    if not exists['`f`/crowfile']
+        return error['`f` has no crowfile: a project is a Crow project (New project makes one)', 'myna']
+    p = project_of[f]
+    data_dir = sq['`f`/`p.data`']
+    books = sq['`f`/notebooks']
+    asks = sq['`f`/queries']
+    made = shell['mkdir -p `data_dir` `books` `asks`']
+    if not exists[workspace.base[]]
+        made_base = mkdir[workspace.base[]]
+    w1 = write[_pointer['.project'], f]
+    if not w1.ok
+        return error['Myna could not note the project: `w1.reason`', 'myna']
+    r = _register[p, true]
+    return p
+
+--- the open project closed: Myna works in its scratch project again
+fn close_project[]
+    a = rm[_pointer['.project']]
+    b = rm[_pointer['.home']]
+    return 1
+
+--- a project taken off the registry (its folder is left as it is)
+fn forget[folder]
+    p = project_of[folder]
+    if current[] eq _bare[folder]
+        c = close_project[]
+    return _register[p, false]
+
+--- a new project made in a folder (made where it is not there yet): a
+--- crowfile using magpie, a manifest with one dashboard, that dashboard's
+--- program, writing a table its tiles show, the notebooks, queries and
+--- data folders, a .gitignore and a git repository; then its packages
+--- installed and the project opened
+fn new_project[folder, name]
+    f = _bare[folder]
+    if not starts[f, '/']
+        return error['Name the folder by its whole path, from /', 'myna']
+    if exists['`f`/crowfile']
+        return error['`f` is a project already: Open it', 'myna']
+    n = trim[name]
+    if n eq ''
+        n = _base_name[f]
+    made = shell['mkdir -p `sq[f]`/dashboards `sq[f]`/notebooks `sq[f]`/queries `sq[f]`/data']
+    if not made.ok
+        return error['The folder was not made: `made.reason`', 'myna']
+    if made.status ne 0
+        return error['The folder was not made: `made.stderr`', 'myna']
+    q = '\''
+    plain = replace[n, q, '']
+    crowfile = 'name = `q``plain``q`\ndeps = map[magpie = \'github.com/agncrow/magpie/packages/magpie@v0.1.1\']\n'
+    w1 = write['`f`/crowfile', crowfile]
+    if not w1.ok
+        return error['The crowfile was not written: `w1.reason`', 'myna']
+    w2 = write['`f`/dashboards/hello.co', hello_program[]]
+    if not w2.ok
+        return error['The program was not written: `w2.reason`', 'myna']
+    w3 = write['`f`/myna.json', hello_manifest[n]]
+    if not w3.ok
+        return error['The manifest was not written: `w3.reason`', 'myna']
+    w4 = write['`f`/.gitignore', '# the data folder: logs and artifacts, made again by the programs\ndata/\n# compiled programs, the build\'s cache, Myna\'s compile and job logs\nbin/\n.crow_build/\n.myna/\n/dashboards_*\n# installed packages (crow install)\ncrow_modules/\n.DS_Store\n']
+    got = shell['cd `sq[f]` && crow install 2>&1 && (git init -q 2>/dev/null || true)']
+    return open_folder[f]
+
+--- the program a new project starts with: it writes `greetings` (a row
+--- per greeting) and `hello_summary` (one row), each row marked with the
+--- run
+fn hello_program[]
+    lines = [
+        '--- A dashboard\'s program: it writes the tables its tiles show, each',
+        '--- row marked with the run (its start, in milliseconds), so the run',
+        '--- verb reads the newest run\'s rows. Its parameters arrive as',
+        '--- name=value arguments.',
+        '---',
+        '---     crow run -i dashboards/hello.co who=world times=3',
+        'use frame, magpie',
+        '',
+        '--- the argument named, or the default where none (or an empty one) was given',
+        'fn arg[name, default]',
+        '    for a in args[]',
+        '        if starts[a, \'\`name\`=\']',
+        '            v = slice[a, len[name] + 1, len[a]]',
+        '            if v ne \'\'',
+        '                return v',
+        '    return default',
+        '',
+        'fn count_of[text]',
+        '    n = int[text]',
+        '    if not n.ok',
+        '        return 3',
+        '    if n lt 1',
+        '        return 1',
+        '    return n',
+        '',
+        'run = int[float[now[]] * 1000.0]',
+        'who = arg[\'who\', \'world\']',
+        'n = count_of[arg[\'times\', \'3\']]',
+        'said = for i in range[n]',
+        '    \'hello, \`who\` (\`i + 1\`)\'',
+        'counts = for i in range[n]',
+        '    i + 1',
+        'f = frame.new[greeting = said, count = counts]',
+        'f.run = run',
+        'w = magpie.batch[\'data/greetings\', f]',
+        's = frame.new[who = [who], greetings = [n]]',
+        's.run = run',
+        'w2 = magpie.batch[\'data/hello_summary\', s]',
+        'log[\'wrote \`n\` greetings to \`who\`\']',
+        '']
+    return join[lines, '\n']
+
+fn hello_manifest[name]
+    q = '"'
+    safe = replace[replace[name, '\\', ''], q, '']
+    return '{\n  "name": "`safe`",\n  "data": "data",\n  "programs": ["dashboards/hello.co"],\n  "dashboards": [\n    {\n      "name": "Hello",\n      "program": "dashboards/hello.co",\n      "about": "a program writes tables; its tiles show the newest run",\n      "params": [{"name": "who", "default": "world"}, {"name": "times", "default": "3"}],\n      "tiles": [\n        {"title": "Greetings", "draw": "number", "query": {"verb": "run", "table": "hello_summary", "columns": "greetings", "k": "1"}},\n        {"title": "Each greeting", "draw": "bars", "query": {"verb": "run", "table": "greetings", "columns": "greeting,count", "k": "100"}},\n        {"title": "The newest run", "draw": "table", "query": {"verb": "run", "table": "greetings", "columns": "greeting,count", "k": "100"}}\n      ]\n    }\n  ]\n}\n'
+
+--- ---- the fingerprint and the programs' builds ----
+
+--- whether a folder of the tree is left out: Crow's own (crow_modules,
+--- target), a dot-folder, and at the top `bin` and the data folder
+fn _left_out[rel, name, ws]
+    if starts[name, '.'] or name eq 'crow_modules' or name eq 'target'
+        return true
+    return rel eq 'bin' or rel eq ws
+
+--- every `.co` file of the project and its crowfile, in `sort`'s order:
+--- the tree walked as Lory Studio walks it (depth first, at most 4000
+--- entries, 12 deep), so the two fingerprints agree
+fn sources[folder]
+    f = _bare[folder]
+    ws = project_of[f].data
+    found = ['crowfile']
+    seen = 0
+    todo = ['']
+    depths = [0]
+    while len[todo] gt 0 and seen lt 4000
+        rel = todo[len[todo] - 1]
+        depth = depths[len[depths] - 1]
+        todo = pop[todo]
+        depths = pop[depths]
+        at = f
+        if rel ne ''
+            at = '`f`/`rel`'
+        names = ls[at]
+        if names.ok
+            folders = []
+            for n in names
+                path = n
+                if rel ne ''
+                    path = '`rel`/`n`'
+                listed = ls['`f`/`path`']
+                if listed.ok
+                    if not _left_out[path, n, ws]
+                        seen = seen + 1
+                        folders = push[folders, path]
+                else
+                    if n ne '.DS_Store'
+                        seen = seen + 1
+                        if ends[n, '.co']
+                            found = push[found, path]
+            --- (pushed backwards, so the first folder is walked first)
+            i = len[folders] - 1
+            while i gte 0
+                if depth lt 12
+                    todo = push[todo, folders[i]]
+                    depths = push[depths, depth + 1]
+                i = i - 1
+    return sort[found]
+
+--- the sources' fingerprint: sha256 of each source's path, a line break,
+--- its contents and a line break, one after another
+fn fingerprint[folder]
+    f = _bare[folder]
+    pieces = []
+    for p in sources[f]
+        t = read['`f`/`p`']
+        body = ''
+        if t.ok
+            body = t
+        pieces = push[pieces, '`p`\n`body`\n']
+    return hash[join[pieces, ''], 'sha256']
+
+--- the binary `crow build` makes of a program: its path without `.co`,
+--- every character but a letter, a digit, `_` and `-` made `_`
+fn binary_name[program]
+    p = program
+    if ends[p, '.co']
+        p = slice[p, 0, len[p] - 3]
+    flat = for ch in split[p, '']
+        _kept[ch]
+    name = join[flat, '']
+    if name eq '' or slice[name, 0, 1] in '0123456789-'
+        return 'app_`name`'
+    return name
+
+fn _kept[ch]
+    if ch in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-'
+        return ch
+    return '_'
+
+--- the programs the manifest compiles
+fn program_paths[folder]
+    found = []
+    for p in workspace.manifest_of[_bare[folder]].programs
+        if inside[p]
+            found = push[found, p]
+    return found
+
+--- each program's build: whether it is compiled, and from the sources as
+--- they are now
+fn programs_of[folder]
+    f = _bare[folder]
+    out = []
+    paths = program_paths[f]
+    if len[paths] eq 0
+        return out
+    now_print = fingerprint[f]
+    for p in paths
+        b = binary_name[p]
+        there = exists['`f`/bin/`b`']
+        stamp = read['`f`/bin/`b`.stamp']
+        fresh = false
+        if there and stamp.ok
+            fresh = trim[stamp] eq now_print
+        out = push[out, Program[p, b, there, fresh]]
+    return out
+
+--- whether a program's binary is there and fresh
+fn fresh_binary[folder, program]
+    f = _bare[folder]
+    b = binary_name[program]
+    if not exists['`f`/bin/`b`']
+        return false
+    stamp = read['`f`/bin/`b`.stamp']
+    if not stamp.ok
+        return false
+    return trim[stamp] eq fingerprint[f]
+
+--- the arguments of a run (`name=value` lines), each quoted for the shell
+fn quoted_args[given]
+    out = []
+    for a in given
+        t = trim[a]
+        if t ne '' and '=' in t
+            out = push[out, sq[t]]
+    return join[out, ' ']
+
+--- a program run from the project's folder, compiled where its binary is
+--- fresh, interpreted otherwise, stopped after `limit` seconds
+fn run_program[folder, program, given, limit]
+    f = _bare[folder]
+    if not inside[program]
+        return Ran['', 1, 0, 'the program is a path inside the project, not `program`']
+    if not exists['`f`/`program`']
+        return Ran['', 1, 0, 'there is no `program` in `f`']
+    mode = 'interpreted'
+    cmd = 'crow run -i `sq[program]`'
+    if fresh_binary[f, program]
+        mode = 'compiled'
+        cmd = sq['bin/`binary_name[program]`']
+    r = shell['cd `sq[f]` && `_timed[limit]` `cmd` `quoted_args[given]` 2>&1']
+    if not r.ok
+        return Ran[mode, 1, 0, 'the program could not be started']
+    said = _output_of[r.stdout]
+    return Ran[mode, r.status, _whole_of[said[1]], said[0]]
+
+--- a tool run on a file from the project's folder, stopped after `limit`
+--- seconds: `test` (crow test) or `build` (crow build --ir, the type check)
+fn run_tool[folder, tool, path, limit]
+    f = _bare[folder]
+    if not inside[path]
+        return Ran['', 1, 0, 'the file is a path inside the project, not `path`']
+    if not exists['`f`/`path`']
+        return Ran['', 1, 0, 'there is no `path` in `f`']
+    cmd = 'crow test `sq[path]`'
+    if tool eq 'build'
+        cmd = 'crow build --ir `sq[path]` > /dev/null'
+    r = shell['cd `sq[f]` && `_timed[limit]` sh -c `sq[cmd]` 2>&1']
+    if not r.ok
+        return Ran[tool, 1, 0, 'the tool could not be started']
+    said = _output_of[r.stdout]
+    return Ran[tool, r.status, _whole_of[said[1]], said[0]]
+
+--- the wrapper a program runs under: it stops the program after `limit`
+--- seconds and ends the output with the milliseconds the run took (a
+--- handler's clock stands still while it runs, so the run is timed here)
+fn _timed[limit]
+    return 'perl -MTime::HiRes=time -e \'$l = shift; $t = time; $pid = fork; if (!$pid) { exec @ARGV; exit 127 } $SIG{ALRM} = sub { kill 9, $pid; print "\\nstopped after $l s\\n" }; alarm $l; waitpid($pid, 0); $c = $? >> 8; $c = 124 if $? & 127; printf "\\n:::ms %d\\n", (time - $t) * 1000; exit $c\' `limit`'
+
+--- a run's output without the wrapper's last line, and the milliseconds
+--- that line says ('-1' where it is missing)
+fn _output_of[out]
+    pieces = split[out, '\n:::ms ']
+    if len[pieces] lt 2
+        return [out, '-1']
+    timing = pieces[len[pieces] - 1]
+    kept = join[slice[pieces, 0, len[pieces] - 1], '\n:::ms ']
+    return [kept, trim[timing]]
+
+fn _whole_of[text]
+    n = int[text]
+    if not n.ok
+        return -1
+    return n
+
+--- the script a compile runs: every program built, each binary moved to
+--- bin/ beside its stamp (the fingerprint as the build began)
+fn compile_script[folder]
+    f = _bare[folder]
+    stamp_text = sq[fingerprint[f]]
+    lines = ['cd `sq[f]` || exit 1', 'mkdir -p bin', 'fail=0', 'if [ ! -d crow_modules ]; then echo "crow install"; crow install || fail=1; fi']
+    for p in program_paths[f]
+        b = binary_name[p]
+        src = sq[p]
+        built = sq['./`b`']
+        kept = sq['bin/`b`']
+        stamp = sq['bin/`b`.stamp']
+        lines = push[lines, 'echo; echo "crow build `p`"']
+        lines = push[lines, 'if crow build `src`; then mv -f `built` `kept` && printf %s `stamp_text` > `stamp`; else fail=1; fi']
+    lines = push[lines, 'if [ $fail = 0 ]; then echo; echo "every program is compiled into bin/"; else echo; echo "a program did not compile"; fi']
+    lines = push[lines, 'echo $fail > .myna/compile.code']
+    return join[lines, '\n']
+
+--- a compile started in the background: its output in .myna/compile.log,
+--- its exit code in .myna/compile.code when it ends
+fn start_compile[folder]
+    f = _bare[folder]
+    if compile_state[f].running
+        return error['A compile is under way already', 'myna']
+    own = sq['`f`/.myna']
+    code_file = sq['`f`/.myna/compile.code']
+    made = shell['mkdir -p `own` && rm -f `code_file`']
+    w = write['`f`/.myna/compile.sh', compile_script[f]]
+    if not w.ok
+        return error['The compile was not started: `w.reason`', 'myna']
+    r = shell['cd `sq[f]` && (nohup sh .myna/compile.sh > .myna/compile.log 2>&1 &) ; echo started']
+    if not r.ok
+        return error['The compile was not started', 'myna']
+    return 1
+
+--- the newest compile: under way while it has a log and no exit code yet
+fn compile_state[folder]
+    f = _bare[folder]
+    log_text = read['`f`/.myna/compile.log']
+    if not log_text.ok
+        return Compiling[false, -1, '']
+    shown = log_text
+    if len[shown] gt 4000
+        shown = slice[shown, len[shown] - 4000, len[shown]]
+    code = read['`f`/.myna/compile.code']
+    if not code.ok
+        return Compiling[true, -1, shown]
+    n = int[trim[code]]
+    if not n.ok
+        return Compiling[false, 1, shown]
+    return Compiling[false, n, shown]
+
+--- a project folder for a test, made in the test's own workspace (never
+--- elsewhere): a crowfile using the packages Myna's checkout installed,
+--- and the Hello dashboard's program and manifest; answers its whole path
+fn test_project[name]
+    if not workspace.scratch[]
+        return error['A test project is made in a test\'s workspace alone: run the tests with ./test.sh', 'myna']
+    here = shell['pwd']
+    if not here.ok
+        return error['The folder the tests run in is not known', 'myna']
+    folder = '`trim[here.stdout]`/`workspace.base[]`/`name`'
+    made = shell['mkdir -p `sq[folder]`/dashboards `sq[folder]`/data']
+    w1 = write['`folder`/crowfile', 'name = \'proj\'\ndeps = map[magpie = \'github.com/agncrow/magpie/packages/magpie@v0.1.1\']\n']
+    --- (the packages Myna's checkout installed, as `crow install` would)
+    linked = shell['ln -s ../../crow_modules `sq[folder]`/crow_modules']
+    w2 = write['`folder`/dashboards/hello.co', hello_program[]]
+    w3 = write['`folder`/myna.json', hello_manifest['Proj']]
+    return folder
+
+test the_names_and_the_fingerprint_are_lory_studios[]
+    binary_name['dashboards/scanner.co'] eq 'dashboards_scanner'
+    binary_name['main.co'] eq 'main'
+    binary_name['9lives.co'] eq 'app_9lives'
+    inside['dashboards/x.co'] eq true
+    inside['../x.co'] eq false
+    inside['/etc/x.co'] eq false
+    sq['it\'s'] eq '\'it\'\\\'\'s\''
+    quoted_args[['day=2026-11-06', '', 'nothing', 'at=09:30']] eq '\'day=2026-11-06\' \'at=09:30\''
+
+--- a project folder made by hand in the test's workspace is opened: the
+--- workspace is the project's while it is open (never a test's), its
+--- dashboard is made from the manifest, its program runs interpreted and
+--- then from a binary whose stamp is the fingerprint, and closing it
+--- gives Myna its own folder back
+test a_project_is_opened_run_and_closed[]
+    if workspace.base[] ne 'myna_data'
+        c = close_project[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    folder = test_project['proj']
+    assert[folder.ok]
+    assert[project_of[folder].name eq 'Proj']
+    assert[project_of[folder].data eq 'data']
+    assert[not open_folder['relative/path'].ok]
+    p = open_folder['`folder`/']
+    assert[p.ok]
+    assert[current[] eq folder]
+    assert[workspace.home[] eq '`folder`/data']
+    assert[not workspace.scratch[]]
+    assert[workspace.dashboards[] eq ['Hello']]
+    assert[len[workspace.board_tiles['Hello']] eq 3]
+    assert[len[projects[]] eq 1]
+    assert[workspace.board_named['Hello'].program eq 'dashboards/hello.co']
+    assert[workspace.board_named['Hello'].param_names eq ['who', 'times']]
+    assert[workspace.board_named['Nope'].program eq '']
+    crowfile_text = read['`folder`/crowfile']
+    assert[crowfile_text.ok]
+    assert[sources[folder] eq ['crowfile', 'dashboards/hello.co']]
+    assert[fingerprint[folder] eq hash['crowfile\n`crowfile_text`\ndashboards/hello.co\n`hello_program[]`\n', 'sha256']]
+    g = programs_of[folder]
+    assert[len[g] eq 1]
+    assert[g[0].binary eq 'dashboards_hello']
+    assert[not g[0].compiled]
+    r = run_program[folder, 'dashboards/hello.co', ['who=crow', 'times=2'], 120]
+    assert[r.mode eq 'interpreted']
+    assert[r.status eq 0, r.output]
+    assert['wrote 2 greetings to crow' in r.output]
+    assert[not (':::ms' in r.output)]
+    assert[r.ms gt 0]
+    f = queries.answer[map[verb = 'run', table = 'greetings', columns = 'greeting,count', k = '10']]
+    assert[f.ok]
+    assert[len[f] eq 2]
+    assert[str[f.greeting[1]] eq 'hello, crow (2)']
+    assert[tiles.refresh['Hello'] eq 3]
+    --- a "binary" whose stamp is the fingerprint runs in its place
+    made = shell['mkdir -p `sq[folder]`/bin && printf \'#!/bin/sh\\necho compiled $1\\n\' > `sq[folder]`/bin/dashboards_hello && chmod +x `sq[folder]`/bin/dashboards_hello']
+    w = write['`folder`/bin/dashboards_hello.stamp', fingerprint[folder]]
+    assert[fresh_binary[folder, 'dashboards/hello.co']]
+    c = run_program[folder, 'dashboards/hello.co', ['who=bin'], 30]
+    assert[c.mode eq 'compiled']
+    assert['compiled who=bin' in c.output]
+    assert[c.ms gte 0]
+    --- a program that runs too long is stopped
+    w = write['`folder`/bin/dashboards_hello', '#!/bin/sh\nsleep 5\necho never\n']
+    slow = run_program[folder, 'dashboards/hello.co', [], 1]
+    assert[slow.status eq 124]
+    assert['stopped after 1 s' in slow.output]
+    assert[not ('never' in slow.output)]
+    --- a source changed: the binary is stale, and the program is interpreted
+    w = write['`folder`/dashboards/more.co', 'log[1]\n']
+    assert[not fresh_binary[folder, 'dashboards/hello.co']]
+    assert[programs_of[folder][0].compiled]
+    assert[not programs_of[folder][0].fresh]
+    assert['crow build \'dashboards/hello.co\'' in compile_script[folder]]
+    done = close_project[]
+    assert[current[] eq '']
+    assert[workspace.home[] eq '`workspace.base[]`/scratch/data']
+    assert[workspace.scratch[]]
+    gone = rm[workspace.code[]]

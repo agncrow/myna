@@ -877,7 +877,7 @@ fn find_traces[experiment_ids, filter, order_by, most, token]
 
 test finders_over_a_workspace[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     tracking.ready[]
     e = tracking.create_experiment['grid', '']
     made = for k in range[5]

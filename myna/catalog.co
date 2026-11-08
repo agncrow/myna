@@ -1,11 +1,13 @@
 --- The catalog: every table in the workspace — the ones the notebooks'
---- cells write, then the workspace's own (an underscore first) — with its
---- rows and columns, and the one picked shown: its newest rows, a page at
---- a time. A table is a Magpie log in the workspace's folder, so `latest` is what
---- it holds: one row per key, the newest version.
+--- cells and an open project's programs write, then the workspace's own
+--- (an underscore first) — with its rows and columns, and the one picked
+--- shown: its newest rows, a page at a time. A table is a Magpie log in the
+--- workspace's folder, so `latest` is what it holds: one row per key, the
+--- newest version.
 use web, ui, frame, magpie
 use myna.workspace
 use myna.workbench
+use myna.projects
 
 picked = ''
 
@@ -18,10 +20,12 @@ fn _shown_columns[names]
             found = push[found, c]
     return found
 
-fn _kind_of[name]
+--- who writes a table: Myna (an underscore first), else `owner`: the
+--- open project (its programs and notebooks), or the notebooks
+fn _kind_of[name, owner]
     if starts[name, '_']
         return 'Myna'
-    return 'notebooks'
+    return owner
 
 --- every table, read again on every refresh: a notebook run or the
 --- scheduler may have written one
@@ -32,8 +36,12 @@ derive listing
         workspace.table_count[n]
     cols = for n in names
         join[_shown_columns[workspace.table_columns[n]], ', ']
+    open = projects.current[]
+    owner = 'notebooks'
+    if open ne ''
+        owner = projects.project_of[open].name
     kinds = for n in names
-        _kind_of[n]
+        _kind_of[n, owner]
     return frame.new[table = names, rows = counts, columns = cols, origin = kinds]
 
 derive folder
@@ -108,16 +116,47 @@ view render[]
 --- a table a cell wrote is listed with its size and opened to its rows
 test a_table_is_listed_and_opened[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     w = magpie.batch['`workspace.home[]`/orders', frame.new[item = ['apples', 'pears'], qty = [3, 5]], by = ['item']]
     a = app[render, wide = true]
     l = listing
     assert[len[l] eq 1]
+    assert[str[l.origin[0]] eq 'notebooks']
     assert['orders' in html[a]]
     click[a, pick['orders']]
     assert[chosen eq 'orders']
     assert['pears' in html[a]]
     click[a, unpick]
     assert[chosen eq '']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
+
+--- in an open project's workspace a table is the project's, and Myna's
+--- own logs are Myna's
+test a_projects_tables_are_its_own[]
+    if workspace.base[] ne 'myna_data'
+        c = projects.close_project[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    made = projects.test_project['catproj']
+    assert[made.ok]
+    p = projects.open_folder[made]
+    assert[p.ok]
+    w = magpie.batch['`workspace.home[]`/orders', frame.new[item = ['apples'], qty = [3]], by = ['item']]
+    r = workspace.put_run['x', '2026-11-07T10:00:00Z', 'you', 1, 'ok', 1, '']
+    l = listing
+    of_orders = ''
+    of_boards = ''
+    n = 0
+    for t in l.table
+        if str[t] eq 'orders'
+            of_orders = str[l.origin[n]]
+        if str[t] eq '_runs'
+            of_boards = str[l.origin[n]]
+        n = n + 1
+    assert[of_orders eq 'Proj']
+    assert[of_boards eq 'Myna']
+    done = projects.close_project[]
+    assert[workspace.scratch[]]
+    gone = rm[workspace.code[]]

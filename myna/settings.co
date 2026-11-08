@@ -3,6 +3,7 @@
 use web, ui
 use myna.workspace
 use myna.workbench
+use myna.access
 
 place = ''
 limit = ''
@@ -26,6 +27,9 @@ fn edit_settings[]
     loaded = true
 
 fn save_settings[]
+    if not access.is_admin
+        notice['Only an admin does this']
+        return
     name = trim[place]
     if name eq ''
         notice['The workspace needs a name']
@@ -71,7 +75,7 @@ view render[]
 --- no number is refused
 test settings_are_kept[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     a = app[render, wide = true]
     assert['Myna' in html[a]]
@@ -89,4 +93,4 @@ test settings_are_kept[]
     b = app[render, wide = true]
     assert[b.place_name eq 'Research']
     assert['Research' in html[b]]
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]

@@ -7,12 +7,15 @@
 --- program (or the folder MYNA_DATA names); ./test.sh runs the tests.
 use web, ui
 use myna.workspace
-use myna.notebooks
+use myna.code
 use myna.catalog
 use myna.jobs
 use myna.settings
 use myna.query
 use myna.dashboards
+use myna.project
+use myna.users
+use myna.grants
 use myna.soon
 use myna.mlapi
 use myna.experiments
@@ -26,12 +29,15 @@ workspace.ready[]
 --- (the workbench drawn in WebGL is a page built for the web: drawn/main.co,
 --- built into drawn/main_web, whose files the server answers)
 serve[3800, wide = true, refresh = 10, files = 'drawn/main_web']
-page['/', notebooks.render, url = ['notebooks.current', 'notebooks.naming']]
+page['/', code.render, url = ['code.current', 'code.naming']]
 page['/catalog', catalog.render, url = ['catalog.picked']]
 page['/jobs', jobs.render]
 page['/settings', settings.render]
 page['/query', query.render, url = ['query.tbl']]
 page['/dashboards', dashboards.render, url = ['dashboards.current']]
+page['/projects', project.render]
+page['/users', users.render]
+page['/access', grants.render, url = ['grants.project']]
 page['/experiments', experiments.render, url = ['experiments.current', 'experiments.tab']]
 page['/runs/:run_id', runs.render, url = ['runs.run_tab', 'runs.folder']]
 page['/compare', runs.compare, url = ['runs.runs', 'runs.x_key', 'runs.y_key']]

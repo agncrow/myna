@@ -425,7 +425,7 @@ fn finish[tr, outputs, state]
 
 test traces_spans_and_feedback[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     tracking.ready[]
     tr = begin['rag', 'answer', '{"q": "why"}']
     t0 = tracking.clock[]

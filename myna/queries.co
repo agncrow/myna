@@ -90,7 +90,48 @@ fn answer[q]
         if not f.ok
             return f
         return head[f, rows_asked[field_of[q, 'k']]]
-    return error['A query is latest, summary or search, not `verb`', 'myna']
+    if verb eq 'run'
+        return newest_rows[dir, table, listed[field_of[q, 'columns']], rows_asked[field_of[q, 'k']]]
+    return error['A query is latest, summary, search or run, not `verb`', 'myna']
+
+--- the run a table's newest rows were written by: a table a program
+--- writes marks each row with its run in a `run` column (the run's start,
+--- in milliseconds, larger for each run); -1 where no run wrote it
+fn newest_run[dir]
+    h = magpie.head[dir]
+    if not h.ok
+        return -1
+    if h lt 0
+        return -1
+    s = magpie.summary[dir, [], ['run'], ['max']]
+    if not s.ok
+        return -1
+    if len[s] eq 0
+        return -1
+    n = int[s.run_max[0]]
+    if not n.ok
+        return -1
+    return n
+
+--- the rows a table's newest run wrote, in the order written: the
+--- columns named (every column but `run` where none are), as many rows as
+--- asked
+fn newest_rows[dir, table, columns, n]
+    r = newest_run[dir]
+    if r lt 0
+        return error['No run has written `table` yet: Run its dashboard, or run the program that writes it', 'myna']
+    f = magpie.lookup[dir, ['run'], ['`r`']]
+    if not f.ok
+        return f
+    cols = columns
+    if len[cols] eq 0
+        for c in f.columns
+            if c ne 'run' and c ne '_pos'
+                cols = push[cols, c]
+    for c in cols
+        if c not in f.columns
+            return error['`table` has no column `c`', 'myna']
+    return head[select[f, cols], n]
 
 --- text written as a Crow string literal
 fn quoted[text]
@@ -130,6 +171,11 @@ fn code[q]
         return 'use magpie\nf = magpie.search[`t`, `col`, `words`, k = `n`, snippet = 60]\nlog[f]'
     cols = listed[field_of[q, 'columns']]
     n = rows_asked[field_of[q, 'k']]
+    if verb eq 'run'
+        newest = 'use magpie\ns = magpie.summary[`t`, [], [\'run\'], [\'max\']]\nr = int[s.run_max[0]]\nf = magpie.lookup[`t`, [\'run\'], [str[r]]]'
+        if len[cols] eq 0
+            return '`newest`\nlog[head[f, `n`]]'
+        return '`newest`\nlog[head[select[f, `_list_code[cols]`], `n`]]'
     if len[cols] eq 0
         return 'use magpie\nf = magpie.latest[`t`]\nlog[head[f, `n`]]'
     named = _list_code[cols]
@@ -156,6 +202,8 @@ fn named[q]
         return '`table`: `said`'
     if verb eq 'search'
         return '`table`: search `column` for `words`'
+    if verb eq 'run'
+        return '`table`: the newest run'
     return '`table`: latest rows'
 
 --- a number as a tile or a bar shows it: whole, or to two places
@@ -179,7 +227,7 @@ fn share[v, top]
 --- a summary over a table a test wrote, its code and its line
 test a_summary_is_answered_and_written_as_code[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 2], shop = ['north', 'south', 'north']], by = ['item']]
     q = map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum', on = '', op = 'eq', value = '']
@@ -195,12 +243,12 @@ test a_summary_is_answered_and_written_as_code[]
     assert['on = [\'shop\'], ops = [\'eq\'], equal = [\'north\']' in code[narrow]]
     latest = answer[map[verb = 'latest', table = 'orders', columns = 'qty', k = '2']]
     assert[len[latest] eq 2]
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
 
 --- a query that cannot be asked says why
 test a_query_without_its_fields_says_why[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     assert[not answer[map[verb = 'summary', table = '']].ok]
     assert[answer[map[verb = 'summary', table = '']].reason eq 'Pick a table to ask']
@@ -208,4 +256,28 @@ test a_query_without_its_fields_says_why[]
     assert[quoted['it\'s'] eq '\'it\\\'s\'']
     assert[listed[' a, ,b '] eq ['a', 'b']]
     assert[rows_asked['x'] eq 10]
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
+
+--- a table two runs wrote: the run verb answers the newest run's rows,
+--- the columns named, in the order written
+test the_run_verb_answers_the_newest_runs_rows[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    q = map[verb = 'run', table = 'scores', columns = 'who,points', k = '10']
+    assert[answer[q].reason eq 'No run has written scores yet: Run its dashboard, or run the program that writes it']
+    w = magpie.batch[workspace.at['scores'], frame.new[who = ['ann', 'bob'], points = [3, 5], run = [100, 100]]]
+    w = magpie.batch[workspace.at['scores'], frame.new[who = ['cy', 'di', 'ed'], points = [7, 1, 4], run = [200, 200, 200]]]
+    f = answer[q]
+    assert[f.ok]
+    assert[f.columns eq ['who', 'points']]
+    assert[len[f] eq 3]
+    assert[str[f.who[0]] eq 'cy']
+    assert[str[f.who[2]] eq 'ed']
+    every_col = answer[map[verb = 'run', table = 'scores', columns = '', k = '2']]
+    assert[every_col.columns eq ['who', 'points']]
+    assert[len[every_col] eq 2]
+    assert[answer[map[verb = 'run', table = 'scores', columns = 'nope', k = '2']].reason eq 'scores has no column nope']
+    assert[named[q] eq 'scores: the newest run']
+    assert['magpie.lookup[\'scores\', [\'run\'], [str[r]]]' in code[q]]
+    gone = rm[workspace.code[]]

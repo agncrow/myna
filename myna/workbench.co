@@ -1,21 +1,30 @@
 --- The workbench around every page: the sidebar with the mark, the
 --- workspace's name and the sections, and the top bar with where the page
 --- is, the search over the workspace's notebooks and tables, and the
---- page's own actions.
+--- page's own actions. The screen asks for a sign-in where the workspace
+--- has users and the reader has none, and shows a reader with no grant on
+--- the open project that they have none (myna/access.co).
 use web, ui
 use myna.workspace
+use myna.projects
+use myna.access
 
 sought = ''
 
---- the workspace's name (Settings), and who is at the keyboard: Myna has
---- no sign-in yet, so the one reader is the account it runs as. The name
---- is read from the settings log, a file: saving it moves the derivation
---- for every reader at once
+--- the workspace's name (Settings), read from the settings log, a file:
+--- saving it moves the derivation for every reader at once
 derive place_name
+    tick = now[]
     return workspace.setting['workspace', 'Myna']
 
-derive who
-    return env['USER', 'you']
+--- the open project's name, '' where none is open (myna/projects.co):
+--- the sidebar names it under the workspace's
+derive project_name
+    tick = now[]
+    folder = projects.current[]
+    if folder eq ''
+        return ''
+    return projects.project_of[folder].name
 
 --- the notebooks and tables whose names, or whose cells, hold the text
 --- searched for
@@ -64,21 +73,44 @@ view side_link[name, icon_name, href, on]
         return a[row[icon[icon_name], name, gap = 's', align = 'center'], href = href, surface = 'card', border = true, pad = 's', radius = 'm', weight = 'bold']
     return a[row[icon[icon_name], name, gap = 's', align = 'center'], href = href, pad = 's', radius = 'm']
 
+--- the workspace's name, and the open project's
+view _place[]
+    if project_name eq ''
+        return p[place_name, color = 'muted', size = 'xs']
+    return p['`place_name` · `project_name`', color = 'muted', size = 'xs']
+
 view sidebar[section]
     return stack[
-        row[mark[], stack[p['Myna', weight = 'bold'], p[place_name, color = 'muted', size = 'xs'], gap = 'xs'], gap = 's', align = 'center'],
+        row[mark[], stack[p['Myna', weight = 'bold'], _place[], gap = 'xs'], gap = 's', align = 'center'],
+        side_link['Projects', 'home', '/projects', section eq 'Projects'],
         side_link['Catalog', 'table', '/catalog', section eq 'Catalog'],
         side_link['Query', 'search', '/query', section eq 'Query'],
-        side_link['Notebooks', 'edit', '/', section eq 'Notebooks'],
+        side_link['Code', 'edit', '/', section eq 'Code'],
         side_link['Dashboards', 'chart', '/dashboards', section eq 'Dashboards'],
         side_link['Experiments', 'flag', '/experiments', section eq 'Experiments'],
         side_link['Models', 'bookmark', '/models', section eq 'Models'],
         side_link['Ask', 'mail', '/ask', section eq 'Ask'],
         side_link['Jobs', 'clock', '/jobs', section eq 'Jobs'],
         divider[],
+        _admin_links[section],
         side_link['Settings', 'settings', '/settings', section eq 'Settings'],
-        row[icon['user'], p['`who` · owner', color = 'muted', size = 'xs'], gap = 's', align = 'center'],
+        _reader_row[],
         gap = 'xs', pad = 'm', width = '236px', background = 'surface', class = 'side']
+
+--- the workspace's pages an admin has: its users and their grants
+view _admin_links[section]
+    if not access.is_admin
+        return stack[]
+    return stack[
+        side_link['Users', 'user', '/users', section eq 'Users'],
+        side_link['Access', 'lock', '/access', section eq 'Access'],
+        gap = 'xs']
+
+--- who is reading, their role, and the way out where they signed in
+view _reader_row[]
+    if access.signed_in
+        return row[icon['user'], p['`access.reader_name` · `access.reader_role`', color = 'muted', size = 'xs'], access.sign_out_button[], gap = 's', align = 'center', wrap = true]
+    return row[icon['user'], p['`access.reader_name` · `access.reader_role`', color = 'muted', size = 'xs'], gap = 's', align = 'center']
 
 view _notebook_hit[name]
     return a[row[icon['edit'], name, gap = 's', align = 'center'], href = '/?current=`name`']
@@ -111,13 +143,25 @@ view topbar[where, actions]
         results[],
         gap = 's']
 
+--- whether a section is the workspace's own, shown whatever the reader's
+--- grant on the open project
+fn _workspace_section[section]
+    return section in ['Projects', 'Users', 'Access', 'Settings']
+
 --- a page of the workbench: the sidebar, then the top bar over the
---- page's body
+--- page's body — the sign-in form alone while the workspace asks for a
+--- sign-in and the reader has none, and no access in place of the body
+--- where the reader has no grant on the open project
 view screen[section, where, actions, body]
+    if access.needed and not access.signed_in
+        return stack[title['Sign in · `place_name`'], access.sign_in_form[], pad = 'l', align = 'center', class = 'signin']
+    shown = body
+    if not access.may_read and not _workspace_section[section]
+        shown = access.no_access[]
     return row[
         title['`where` · `place_name`'],
         sidebar[section],
-        stack[topbar[where, actions], divider[], body, gap = 'm', pad = 'm', fill = 'true', class = 'main'],
+        stack[topbar[where, actions], divider[], shown, gap = 'm', pad = 'm', fill = 'true', class = 'main'],
         gap = 'none', align = 'start', below = 'phone', becomes = 'stack', class = 'shell']
 
 --- the top bar's action on the pages that are not the notebooks: a link

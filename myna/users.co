@@ -1,0 +1,247 @@
+--- Users: the workspace's users, an admin's page (myna/access.co). A
+--- workspace with no users is one person's: adding the first user, an
+--- admin, signs that person in as them, and from then on every page asks
+--- for a sign-in. A user is added with a name, a password and a role,
+--- given a new password, made an admin or a member, and deactivated
+--- (they cannot sign in, and are signed out) or activated again; nobody
+--- changes their own role or deactivates themself.
+use web, ui, frame
+use myna.workspace
+use myna.workbench
+use myna.access
+
+changed = 0
+adding = false
+new_user = ''
+new_name = ''
+new_email = ''
+new_pass = ''
+new_role = 'member'
+resetting = ''
+reset_pass = ''
+
+derive listing
+    seen = changed
+    tick = now[]
+    return access.users[]
+
+derive first
+    seen = changed
+    tick = now[]
+    return not access.has_users[]
+
+fn ask_add[]
+    new_user = ''
+    new_name = ''
+    new_email = ''
+    new_pass = ''
+    new_role = 'member'
+    adding = true
+
+fn close_add[]
+    adding = false
+    new_pass = ''
+
+fn add_one[]
+    if not access.is_admin
+        notice['Only an admin adds users']
+        return
+    was_first = not access.has_users[]
+    r = access.add_user[new_user, new_name, new_email, new_pass, new_role]
+    if not r.ok
+        notice[r.reason]
+        return
+    u = access.user_named[trim[new_user]]
+    if not u.ok
+        notice['The user was not kept: `u.reason`']
+        return
+    adding = false
+    new_pass = ''
+    changed = changed + 1
+    if was_first
+        sign_in[map[id = u.user, name = u.name, role = u.role]]
+        notice['Added `u.user`, an admin, and signed you in as them: from now on Myna asks for a sign-in']
+        return
+    notice['Added `u.user`']
+
+fn ask_reset[user]
+    resetting = user
+    reset_pass = ''
+
+fn close_reset[]
+    resetting = ''
+    reset_pass = ''
+
+fn reset_one[]
+    if not access.is_admin
+        notice['Only an admin gives a password']
+        return
+    r = access.set_password[resetting, reset_pass]
+    if not r.ok
+        notice[r.reason]
+        return
+    notice['`resetting` has a new password']
+    resetting = ''
+    reset_pass = ''
+    changed = changed + 1
+
+fn toggle_role[user]
+    if not access.is_admin
+        notice['Only an admin changes a role']
+        return
+    if user eq access.reader_id
+        notice['Your own role is for another admin to change']
+        return
+    u = access.user_named[user]
+    if not u.ok
+        notice[u.reason]
+        return
+    to = 'admin'
+    if u.role eq 'admin'
+        to = 'member'
+    r = access.set_role[user, to]
+    if not r.ok
+        notice[r.reason]
+        return
+    changed = changed + 1
+    notice['`user` is now `to`']
+
+fn toggle_active[user]
+    if not access.is_admin
+        notice['Only an admin deactivates a user']
+        return
+    if user eq access.reader_id
+        notice['You cannot deactivate yourself']
+        return
+    u = access.user_named[user]
+    if not u.ok
+        notice[u.reason]
+        return
+    r = access.set_active[user, not u.active]
+    if not r.ok
+        notice[r.reason]
+        return
+    changed = changed + 1
+    if u.active
+        notice['`user` is deactivated and signed out']
+        return
+    notice['`user` is active again']
+
+view _state[u]
+    if u.active
+        return p[u.role, color = 'up', size = 's']
+    return p['`u.role` · deactivated', color = 'muted', size = 's']
+
+view _role_button[u]
+    if u.role eq 'admin'
+        return button['Make member', click = toggle_role[u.user], tip = 'A member does what their grants allow']
+    return button['Make admin', click = toggle_role[u.user], tip = 'An admin does everything, everywhere']
+
+view _active_button[u]
+    if u.active
+        return button['Deactivate', click = toggle_active[u.user], confirm = 'Deactivate `u.user`? They are signed out and cannot sign in until activated again.']
+    return button['Activate', click = toggle_active[u.user]]
+
+view _user_row[u]
+    return row[
+        stack[
+            row[p[u.user, weight = 'bold', font = 'mono'], _state[u], gap = 's', align = 'center'],
+            p['`u.name` · `u.email`', color = 'muted', size = 'xs'],
+            gap = 'xs'],
+        row[button['New password', click = ask_reset[u.user]], _role_button[u], _active_button[u], gap = 'xs', wrap = true],
+        justify = 'between', align = 'center', gap = 'm', wrap = true]
+
+view _users[]
+    if first
+        return stack[
+            h2['No users yet'],
+            p['This workspace is yours alone: you are its admin, and no page asks for a sign-in. Add the first user — an admin — and Myna signs you in as them and asks everyone to sign in from then on.', color = 'muted', size = 's'],
+            gap = 's', pad = 'm', surface = 'card', border = true]
+    rows = for u in listing
+        _user_row[u]
+    return stack[rows, gap = 's', pad = 'm', surface = 'card', border = true]
+
+view _adding[]
+    return modal[
+        stack[
+            h2['Add a user'],
+            form[
+                field['User', new_user, type = 'text'],
+                field['Name', new_name, type = 'text'],
+                field['Email', new_email, type = 'text'],
+                field['Password', new_pass, type = 'password'],
+                select[['member', 'admin'], new_role],
+                button['Add', class = 'primary'],
+                submit = add_one],
+            p['a user name is lowercase letters, digits, _, . or -; a password is at least eight characters', color = 'muted', size = 'xs'],
+            button['Cancel', click = close_add, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = adding]
+
+view _resetting[]
+    return modal[
+        stack[
+            h2['A new password for `resetting`'],
+            form[field['Password', reset_pass, type = 'password'], button['Save', class = 'primary'], submit = reset_one],
+            button['Cancel', click = close_reset, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = resetting ne '']
+
+view _body[]
+    if not access.is_admin
+        return stack[
+            h2['Admins only'],
+            p['The users are an admin\'s to see and change.', color = 'muted', size = 's'],
+            gap = 's', pad = 'm', surface = 'card', border = true, max_width = '560px']
+    return stack[
+        row[h1['Users'], p['who may sign in to this workspace, and their role: an admin does everything, a member what their grants allow', color = 'muted', size = 's'], gap = 's', align = 'center', wrap = true],
+        _users[],
+        gap = 'm']
+
+view render[]
+    return stack[
+        workbench.screen['Users', 'Users', button['Add user', click = ask_add], _body[]],
+        _adding[],
+        _resetting[]]
+
+--- a workspace with no users shows the one reader as its admin; the first
+--- user added is an admin and the reader is signed in as them; a second
+--- is a member; a member sees no users; a role is toggled, not one's own
+test users_are_added_and_changed[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.base[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    assert['No users yet' in html[a]]
+    click[a, ask_add]
+    change[a, 'new_user', 'ann']
+    change[a, 'new_name', 'Ann']
+    change[a, 'new_pass', 'longenough']
+    change[a, 'new_role', 'member']
+    click[a, add_one]
+    assert[access.user_named['ann'].role eq 'admin']
+    assert['Ann · admin' in html[a], 'the first user is signed in, and the sidebar names them']
+    click[a, ask_add]
+    change[a, 'new_user', 'bo']
+    change[a, 'new_pass', 'longenough']
+    click[a, add_one]
+    assert[access.user_named['bo'].role eq 'member']
+    click[a, toggle_role['ann']]
+    assert[access.user_named['ann'].role eq 'admin', 'not one\'s own role']
+    click[a, toggle_role['bo']]
+    assert[access.user_named['bo'].role eq 'admin']
+    click[a, toggle_role['bo']]
+    assert[access.user_named['bo'].role eq 'member']
+    click[a, ask_reset['bo']]
+    change[a, 'reset_pass', 'bo-was-here']
+    click[a, reset_one]
+    assert[access.check['bo', 'bo-was-here']]
+    click[a, toggle_active['bo']]
+    assert[not access.user_named['bo'].active]
+    assert[not access.check['bo', 'bo-was-here']]
+    click[a, toggle_active['bo']]
+    assert[access.user_named['bo'].active]
+    b = app[render, wide = true]
+    change[b, 'reader', map[id = 'bo', name = 'Bo', role = 'member']]
+    assert['Admins only' in html[b]]
+    gone = rm[workspace.base[]]

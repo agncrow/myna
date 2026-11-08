@@ -1527,7 +1527,7 @@ fn h_assessment_delete[req]
 
 test the_api_answers_as_mlflow_does[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     missing = api_experiment_by_name[json['{"experiment_name": "nope"}']]
     assert[missing.kind eq 'missing']
     made = json[api_experiment_create[json['{"name": "check", "tags": [{"key": "team", "value": "a"}, {"key": "team", "value": "b"}]}']]]

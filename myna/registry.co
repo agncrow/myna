@@ -574,7 +574,7 @@ fn model_folder[name, ref]
 
 test models_versions_aliases_and_prompts[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     tracking.ready[]
     e = tracking.create_experiment['houses', '']
     r = tracking.create_run[e, 'ridge', 'ada', 0]

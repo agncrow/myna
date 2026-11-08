@@ -82,10 +82,10 @@ fn h_drawn[req]
 
 test the_drawn_workbench_reads_the_workspace_as_the_pages_do[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     w = magpie.batch['`workspace.home[]`/orders', frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 8]], by = ['item']]
-    put = workspace.put_cell['sales', 1, 'x = 1', true, '2026-11-07T10:00:00Z']
+    put = workspace.put_cell['sales', 0, 'x = 1', true, '2026-11-07T10:00:00Z']
     tables = api_tables[]
     named = for t in tables
         t.name
@@ -101,4 +101,4 @@ test the_drawn_workbench_reads_the_workspace_as_the_pages_do[]
     assert[len[books] eq 1]
     assert[books[0].name eq 'sales']
     assert[books[0].sources eq ['x = 1']]
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]

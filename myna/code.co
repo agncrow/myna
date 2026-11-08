@@ -1,0 +1,1328 @@
+--- The Code page: the project's files, each opened in place — a `.co`
+--- file as cells of Crow (marked by `--- %%` lines; a file without marks
+--- is one cell) or as text, any other file as text — with the notebooks
+--- first in the tree. Cells run top to bottom as one program, under each
+--- what it printed, how it ended and how long it took; a `.co` file is
+--- also run, tested and type-checked whole, its output in the console
+--- under the editor. Every save writes the file; every run is a row of
+--- the runs log, keyed by the notebook's name or the file's path, so
+--- History lists the runs and, where the code is in git, the file's
+--- commits, and restores one. The git drawer shows the branch and the
+--- changes, commits, pulls and pushes. A schedule is kept in the
+--- manifest for the scheduler (scheduler.co, started from Jobs). The
+--- cells' outputs are the session's last run, by position: a change to
+--- the cells' order or number forgets them.
+use web, ui, frame
+use myna.workspace
+use myna.engine
+use myna.workbench
+use myna.access
+use myna.projects
+
+current = ''
+naming = false
+new_name = ''
+creating = false
+new_path = ''
+written = 0
+editing = -1
+draft = ''
+as_text = false
+text_editing = false
+text_draft = ''
+history_open = false
+run_open = -1
+cell_out = []
+cell_end = []
+cell_ms = []
+cell_ran = []
+names_left = []
+run_note = ''
+open_files = []
+console = ''
+console_for = ''
+git_open = false
+git_in = false
+git_branch_name = ''
+git_text = ''
+git_message = ''
+
+--- the file's versions, its commits: read when History opens (git
+--- answers them, which a derivation may not ask)
+held_versions = frame.new[version = ['none'], at = [''], change = ['']]
+versions_for = ''
+
+--- the file shown: the one chosen where it still exists, else the first
+--- notebook, else the first file, else none
+fn _shown[chosen, files]
+    if chosen ne ''
+        if chosen in files
+            return chosen
+    if len[files] eq 0
+        return ''
+    return files[0]
+
+--- the files are read again after every write
+derive files
+    seen = written
+    return workspace.code_files[]
+
+derive notebooks
+    seen = written
+    return workspace.names[]
+
+derive shown
+    seen = written
+    return _shown[current, workspace.code_files[]]
+
+--- the key the file's runs and schedule are kept under
+derive key
+    return workspace.key_of[shown]
+
+derive is_code
+    return ends[shown, '.co']
+
+derive cell_sources
+    seen = written
+    return workspace.cells_at[_shown[current, workspace.code_files[]]]
+
+derive cell_ids
+    seen = written
+    return range[len[workspace.cells_at[_shown[current, workspace.code_files[]]]]]
+
+--- the file's text, for the text view
+derive file_text
+    seen = written
+    t = workspace.text_at[_shown[current, workspace.code_files[]]]
+    if not t.ok
+        return ''
+    return t
+
+derive versions
+    return held_versions[held_versions.version ne 'none']
+
+derive runs
+    seen = written
+    tick = now[]
+    return workspace.runs[workspace.key_of[_shown[current, workspace.code_files[]]]]
+
+derive every
+    seen = written
+    return workspace.every[workspace.key_of[_shown[current, workspace.code_files[]]]]
+
+derive next_due
+    seen = written
+    tick = now[]
+    return workspace.due[workspace.key_of[_shown[current, workspace.code_files[]]]]
+
+derive reads
+    seen = written
+    return engine.reads[workspace.cells_at[_shown[current, workspace.code_files[]]]]
+
+derive writes
+    seen = written
+    return engine.writes[workspace.cells_at[_shown[current, workspace.code_files[]]]]
+
+fn _seconds[written_as]
+    n = int[written_as]
+    if not n.ok
+        return 60
+    m = n
+    if m lt 1
+        m = 60
+    if m gt 3600
+        m = 3600
+    return m
+
+derive limit
+    seen = written
+    return _seconds[workspace.setting['limit', '60']]
+
+derive run_text
+    if run_open lt 0
+        return ''
+    return engine.cleaned[workspace.run_output[run_open]]
+
+--- where a cell stands among the file's, by its id; -1 where it is not
+--- there
+fn _position[cid, ids]
+    found = -1
+    for i in range[len[ids]]
+        if ids[i] eq cid
+            found = i
+    return found
+
+fn _source_of[cid, ids, srcs]
+    found = ''
+    for i in range[len[ids]]
+        if ids[i] eq cid
+            found = srcs[i]
+    return found
+
+--- a run's lists over the cells: the run's own for the cells it ran, the
+--- earlier run's for the rest, `filler` where there is none
+fn _merged[had, got, n, filler]
+    found = []
+    for i in range[n]
+        if i lt len[got]
+            found = push[found, got[i]]
+        else
+            if i lt len[had]
+                found = push[found, had[i]]
+            else
+                found = push[found, filler]
+    return found
+
+fn _total[ms]
+    total = 0
+    for m in ms
+        if m gt 0
+            total = total + m
+    if total lt 0
+        total = 0
+    if total gt 1000000000000000
+        total = 1000000000000000
+    return total
+
+fn _forget_run[]
+    cell_out = []
+    cell_end = []
+    cell_ms = []
+    cell_ran = []
+    names_left = []
+    run_note = ''
+
+--- the open cell's text saved where it changed
+fn _keep_draft[]
+    if editing lt 0
+        return
+    was = _source_of[editing, cell_ids, cell_sources]
+    if was eq draft
+        return
+    w = workspace.put_cell_at[shown, editing, draft, true]
+    if not w.ok
+        notice['The cell was not saved: `w.reason`']
+        return
+    written = written + 1
+
+--- a list with a path added once, or taken out
+fn _with[paths, path]
+    if path in paths
+        return paths
+    return push[paths, path]
+
+fn _without[paths, path]
+    kept = []
+    for p in paths
+        if p ne path
+            kept = push[kept, p]
+    return kept
+
+--- ---- the files ----
+
+fn open_file[path]
+    _keep_draft[]
+    current = path
+    open_files = _with[open_files, path]
+    editing = -1
+    draft = ''
+    text_editing = false
+    text_draft = ''
+    as_text = false
+    _forget_run[]
+
+fn open_notebook[name]
+    open_file[workspace.notebook_path[name]]
+
+fn close_file[path]
+    if path eq shown
+        _keep_draft[]
+    open_files = _without[open_files, path]
+    if path eq current
+        current = ''
+        if len[open_files] gt 0
+            current = open_files[len[open_files] - 1]
+        editing = -1
+        draft = ''
+        text_editing = false
+        _forget_run[]
+
+fn ask_name[]
+    naming = true
+    new_name = ''
+
+fn close_naming[]
+    naming = false
+
+fn create[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    name = trim[new_name]
+    if name eq ''
+        notice['Name the notebook first']
+        return
+    if name in notebooks
+        notice['A notebook called `name` exists: open it from the tree']
+        return
+    _keep_draft[]
+    w = workspace.put_cell[name, 0, '', true, str[now[]]]
+    if not w.ok
+        notice['The notebook was not saved: `w.reason`']
+        return
+    written = written + 1
+    naming = false
+    new_name = ''
+    path = workspace.notebook_path[name]
+    current = path
+    open_files = _with[open_files, path]
+    _forget_run[]
+    editing = 0
+    draft = ''
+
+fn ask_file[]
+    creating = true
+    new_path = ''
+
+fn close_creating[]
+    creating = false
+
+--- a file made at a path of the project, empty, and opened as text
+fn create_file[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    path = trim[new_path]
+    if not workspace.good_path[path]
+        notice['A file is a path inside the project, as app/orders.co']
+        return
+    if path in files
+        notice['`path` exists: open it from the tree']
+        return
+    _keep_draft[]
+    w = workspace.put_text_at[path, '']
+    if not w.ok
+        notice['The file was not made: `w.reason`']
+        return
+    written = written + 1
+    creating = false
+    new_path = ''
+    current = path
+    open_files = _with[open_files, path]
+    _forget_run[]
+    editing = -1
+    as_text = not ends[path, '.co']
+    text_editing = as_text
+    text_draft = ''
+
+fn delete_file[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    path = shown
+    if path eq ''
+        return
+    k = key
+    w = workspace.remove_at[path]
+    if not w.ok
+        notice['The file was not deleted: `w.reason`']
+        return
+    s = workspace.put_schedule[k, 0, str[now[]]]
+    written = written + 1
+    open_files = _without[open_files, path]
+    current = ''
+    editing = -1
+    draft = ''
+    text_editing = false
+    _forget_run[]
+    notice['`path` was deleted; its runs stay in the log, and its versions in git']
+
+--- ---- the cells ----
+
+fn add_cell[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    path = shown
+    if path eq ''
+        notice['Create a notebook first']
+        return
+    nid = len[cell_ids]
+    w = workspace.put_cell_at[path, nid, '', true]
+    if not w.ok
+        notice['The cell was not added: `w.reason`']
+        return
+    written = written + 1
+    _forget_run[]
+    editing = nid
+    draft = ''
+
+fn edit[cid]
+    _keep_draft[]
+    editing = cid
+    draft = _source_of[cid, cell_ids, cell_sources]
+
+fn save[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    editing = -1
+    draft = ''
+
+fn cancel[]
+    editing = -1
+    draft = ''
+
+fn delete_cell[cid]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    if editing eq cid
+        editing = -1
+        draft = ''
+    _keep_draft[]
+    w = workspace.put_cell_at[shown, cid, '', false]
+    if not w.ok
+        notice['The cell was not deleted: `w.reason`']
+        return
+    written = written + 1
+    _forget_run[]
+
+--- two cells' texts swapped: a cell moves by taking its neighbour's place
+fn _swap[a, b]
+    sa = _source_of[a, cell_ids, cell_sources]
+    sb = _source_of[b, cell_ids, cell_sources]
+    wa = workspace.put_cell_at[shown, a, sb, true]
+    wb = workspace.put_cell_at[shown, b, sa, true]
+    written = written + 1
+    _forget_run[]
+
+fn move_up[cid]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    editing = -1
+    draft = ''
+    ids = cell_ids
+    pos = _position[cid, ids]
+    if pos lte 0
+        return
+    _swap[ids[pos - 1], cid]
+
+fn move_down[cid]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    editing = -1
+    draft = ''
+    ids = cell_ids
+    pos = _position[cid, ids]
+    if pos lt 0
+        return
+    if pos + 1 gte len[ids]
+        return
+    _swap[cid, ids[pos + 1]]
+
+--- the cells before `upto` run as one program; what each printed, how it
+--- ended and its milliseconds are kept for the cells it ran, and the run
+--- is written to the runs log
+fn _execute[upto]
+    path = shown
+    if path eq ''
+        return
+    srcs = cell_sources
+    n = len[srcs]
+    count = upto
+    if count gt n
+        count = n
+    if count lte 0
+        return
+    file = '`engine.slug[path]`.page'
+    r = engine.run[workspace.home[], file, engine.program[srcs, count], limit]
+    if not r.ok
+        notice['The cells did not run: `r.reason`']
+        return
+    firsts = engine.starts_at[srcs, count]
+    ended = engine.states[r.stdout, count, r.status, file, firsts]
+    ms = engine.times[r.stdout, count]
+    cell_out = _merged[cell_out, engine.outputs[r.stdout, count, file, firsts], n, '']
+    cell_end = _merged[cell_end, ended, n, '']
+    cell_ms = _merged[cell_ms, ms, n, -1]
+    cell_ran = _merged[cell_ran, slice[srcs, 0, count], n, '']
+    names_left = engine.kinds[r.stdout]
+    total = _total[ms]
+    how = engine.verdict[ended]
+    kept = workspace.put_run[key, str[now[]], access.reader_id, count, how, total, slice[r.stdout, 0, 100000]]
+    written = written + 1
+    if kept.ok
+        run_note = 'run `kept` · `count` of `n` cells · `how` · `total` ms'
+    else
+        run_note = '`count` of `n` cells · `how` · `total` ms (not recorded: `kept.reason`)'
+
+fn run_all[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    _execute[len[cell_ids]]
+
+fn run_to[cid]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    _execute[_position[cid, cell_ids] + 1]
+
+fn schedule[seconds]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    if shown eq ''
+        return
+    w = workspace.put_schedule[key, seconds, str[now[]]]
+    if not w.ok
+        notice['The schedule was not saved: `w.reason`']
+        return
+    written = written + 1
+    if seconds eq 0
+        notice['`key` runs only when you run it']
+    else
+        notice['`key` runs `_every_words[seconds]` while the scheduler runs (Jobs)']
+
+fn open_history[]
+    held_versions = workspace.versions_at[shown]
+    versions_for = shown
+    history_open = true
+
+fn close_history[]
+    history_open = false
+
+fn show_run[run]
+    run_open = run
+
+fn close_run[]
+    run_open = -1
+
+--- a commit's text made the file's again
+fn restore[version]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    t = workspace.version_text_at[shown, version]
+    if not t.ok
+        notice[t.reason]
+        return
+    w = workspace.put_text_at[shown, t]
+    if not w.ok
+        notice['The version was not restored: `w.reason`']
+        return
+    written = written + 1
+    editing = -1
+    draft = ''
+    text_editing = false
+    _forget_run[]
+    held_versions = workspace.versions_at[shown]
+    notice['`shown` holds version `version` again (uncommitted)']
+
+--- ---- the text view ----
+
+fn show_as_text[]
+    _keep_draft[]
+    editing = -1
+    draft = ''
+    as_text = true
+
+fn show_as_cells[]
+    if text_editing
+        notice['Save or cancel the text first']
+        return
+    as_text = false
+
+fn edit_text[]
+    text_draft = file_text
+    text_editing = true
+
+fn save_text[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    w = workspace.put_text_at[shown, text_draft]
+    if not w.ok
+        notice['The file was not saved: `w.reason`']
+        return
+    written = written + 1
+    text_editing = false
+    _forget_run[]
+
+fn cancel_text[]
+    text_editing = false
+    text_draft = ''
+
+--- ---- the console: a file run, tested or type-checked whole ----
+
+fn _said[r, what]
+    out = r.output
+    if r.status eq 0
+        return '`out`\n[`what` finished in `r.ms` ms]'
+    if r.status eq 124
+        return '`out`\n[`what` was stopped after the time limit]'
+    return '`out`\n[`what` ended with status `r.status`]'
+
+fn run_file[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    r = projects.run_program[workspace.code[], shown, [], limit]
+    console_for = 'run `shown` (`r.mode`)'
+    console = _said[r, 'the run']
+
+fn test_file[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    r = projects.run_tool[workspace.code[], 'test', shown, limit]
+    console_for = 'test `shown`'
+    console = _said[r, 'crow test']
+
+fn build_file[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    r = projects.run_tool[workspace.code[], 'build', shown, limit]
+    console_for = 'check `shown`'
+    console = _said[r, 'crow build --ir']
+
+fn clear_console[]
+    console = ''
+    console_for = ''
+
+--- ---- git ----
+
+fn _read_git[]
+    git_in = workspace.in_git[]
+    git_branch_name = workspace.git_branch[]
+    git_text = workspace.git_status[]
+
+fn open_git[]
+    _keep_draft[]
+    _read_git[]
+    git_open = true
+
+fn close_git[]
+    git_open = false
+
+fn refresh_git[]
+    _read_git[]
+
+fn init_git[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    r = workspace.git_init[]
+    if not r.ok
+        notice[r.reason]
+        return
+    _read_git[]
+    notice['The code is a git repository now']
+
+fn commit_git[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    _keep_draft[]
+    r = workspace.git_commit[git_message]
+    if not r.ok
+        notice[r.reason]
+        return
+    git_message = ''
+    _read_git[]
+    held_versions = workspace.versions_at[shown]
+    notice['Committed']
+
+fn pull_git[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    r = workspace.git_pull[]
+    if not r.ok
+        notice[r.reason]
+        return
+    written = written + 1
+    _read_git[]
+    notice['Pulled: `r`']
+
+fn push_git[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
+    r = workspace.git_push[]
+    if not r.ok
+        notice[r.reason]
+        return
+    _read_git[]
+    notice['Pushed']
+
+fn _every_words[seconds]
+    if seconds eq 900
+        return 'every 15 minutes'
+    if seconds eq 3600
+        return 'every hour'
+    if seconds eq 86400
+        return 'every day'
+    if seconds lte 0
+        return 'only when run by hand'
+    return 'every `seconds` seconds'
+
+fn _took[ms]
+    if ms lt 0
+        return ''
+    if ms lt 1000
+        return '`ms` ms'
+    return '`round[float[ms] / 100.0] / 10.0` s'
+
+--- how a cell's last run ended, where it ran since its text last changed
+fn _word_of[i, ended, ran, srcs]
+    if i gte len[ended]
+        return 'not run'
+    if ended[i] eq ''
+        return 'not run'
+    if ran[i] ne srcs[i]
+        return 'changed'
+    return ended[i]
+
+fn _when[at]
+    t = moment[at]
+    if not t.ok
+        return at
+    told = fmt[t, style = 'datetime']
+    if not told.ok
+        return at
+    plain = told
+    return '`plain` UTC'
+
+--- ---- the views ----
+
+view _word[word]
+    if word eq 'ok'
+        return p['ok', color = 'up', size = 's', weight = 'bold']
+    if word eq 'error' or word eq 'refused' or word eq 'timeout'
+        return p[word, color = 'down', size = 's', weight = 'bold']
+    if word eq 'changed'
+        return p['changed since it ran', color = 'accent', size = 's']
+    return p[word, color = 'muted', size = 's']
+
+view _output[i]
+    if i gte len[cell_out]
+        return stack[]
+    if cell_out[i] eq ''
+        if cell_end[i] eq 'ok'
+            return p['printed nothing', color = 'muted', size = 's']
+        return stack[]
+    return stack[pre[cell_out[i], font = 'mono', size = 's'], background = 'bg', pad = 's', radius = 's']
+
+view _source[source]
+    if source eq ''
+        return p['empty cell: Edit to write Crow', color = 'muted', size = 's']
+    return pre[source, font = 'mono', size = 's']
+
+view _cell_number[i, word, ms]
+    return row[
+        p['[`i + 1`]', font = 'mono', color = 'muted', size = 's'],
+        _word[word],
+        p[_took[ms], color = 'muted', size = 's'],
+        gap = 's', align = 'center']
+
+--- beside "editing": how the cell's last run ended, where it ran
+view _ran_word[i]
+    word = _word_of[i, cell_end, cell_ran, cell_sources]
+    if word eq 'not run'
+        return stack[]
+    if word eq 'changed'
+        return stack[]
+    return row[p['· last run', color = 'muted', size = 's'], _word[word], p[_took[_ms_of[i, cell_ms]], color = 'muted', size = 's'], gap = 'xs', align = 'center']
+
+fn _ms_of[i, ms]
+    if i lt len[ms]
+        return ms[i]
+    return -1
+
+view _editor[i, cid, last]
+    return stack[
+        row[
+            row[p['[`i + 1`]', font = 'mono', color = 'muted', size = 's'], p['editing', color = 'accent', size = 's', weight = 'bold'], _ran_word[i], gap = 's', align = 'center'],
+            row[
+                button['Run', click = run_to[cid], shortcut = 'ctrl+enter meta+enter', tip = 'Save, then run the cells down to this one (Ctrl+Enter)'],
+                button['Save', click = save, shortcut = 'ctrl+s meta+s', tip = 'Save the cell (Ctrl+S)'],
+                button['Cancel', click = cancel, shortcut = 'escape', tip = 'Forget the changes (Escape)'],
+                button['Delete', click = delete_cell[cid], confirm = 'Delete cell [`i + 1`]?'],
+                gap = 'xs', align = 'center', wrap = true],
+            justify = 'between', align = 'center', wrap = true, gap = 's', class = 'cellbar'],
+        stack[field['', draft, lines = 10], class = 'code'],
+        _output[i],
+        gap = 's', pad = 'm', surface = 'card', border = true]
+
+view _viewer[i, cid, source, last]
+    return stack[
+        row[
+            _cell_number[i, _word_of[i, cell_end, cell_ran, cell_sources], _ms_of[i, cell_ms]],
+            row[
+                button['Run', click = run_to[cid], tip = 'Run the cells down to this one'],
+                button['Edit', click = edit[cid]],
+                button['↑', click = move_up[cid], tip = 'Move the cell up', disabled = i eq 0],
+                button['↓', click = move_down[cid], tip = 'Move the cell down', disabled = i eq last],
+                button['Delete', click = delete_cell[cid], confirm = 'Delete cell [`i + 1`]?'],
+                gap = 'xs', align = 'center', wrap = true],
+            justify = 'between', align = 'center', wrap = true, gap = 's', class = 'cellbar'],
+        _source[source],
+        _output[i],
+        gap = 's', pad = 'm', surface = 'card', border = true]
+
+view cell_view[i]
+    ids = cell_ids
+    srcs = cell_sources
+    last = len[ids] - 1
+    if ids[i] eq editing
+        return _editor[i, ids[i], last]
+    return _viewer[i, ids[i], srcs[i], last]
+
+--- the tree: every file of the project, the notebooks first, a folder's
+--- name over its files; a press opens the file
+fn _folder_of[path]
+    pieces = split[path, '/']
+    if len[pieces] lt 2
+        return ''
+    return join[slice[pieces, 0, len[pieces] - 1], '/']
+
+fn _base_of[path]
+    pieces = split[path, '/']
+    return pieces[len[pieces] - 1]
+
+view _tree_file[path]
+    name = _base_of[path]
+    if path eq shown
+        return button[name, click = open_file[path], weight = 'bold', surface = 'card', border = true, class = 'treefile on']
+    return button[name, click = open_file[path], class = 'treefile']
+
+--- a row of the tree: a file, under its folder's name where the folder
+--- changes ('' where it does not)
+struct TreeRow [label, path]
+
+fn _tree_plan[paths]
+    plan = []
+    last_folder = '·'
+    for path in paths
+        folder = _folder_of[path]
+        label = ''
+        if folder ne last_folder
+            label = folder
+            if label eq ''
+                label = 'the project'
+            last_folder = folder
+        plan = push[plan, TreeRow[label, path]]
+    return plan
+
+view _tree_row[r]
+    if r.label eq ''
+        return _tree_file[r.path]
+    return stack[p[r.label, color = 'muted', size = 'xs', weight = 'bold', class = 'treefolder'], _tree_file[r.path], gap = 'xs']
+
+view _tree_rows[]
+    rows = for r in _tree_plan[files]
+        _tree_row[r]
+    return stack[rows, gap = 'xs']
+
+view _tree[]
+    if len[files] eq 0
+        return stack[p['No files yet', color = 'muted', size = 's'], gap = 'xs', pad = 's', surface = 'card', border = true, width = '220px', class = 'tree']
+    return stack[scroll[_tree_rows[], height = '640px'], gap = 'xs', pad = 's', surface = 'card', border = true, width = '220px', class = 'tree']
+
+--- the open files as tabs, the shown one marked, each closed by its ✕
+view _tab[path]
+    if path eq shown
+        return row[button[path, click = open_file[path], weight = 'bold', surface = 'card', border = true], button['✕', click = close_file[path], tip = 'Close the file'], gap = 'none', align = 'center', class = 'tab on']
+    return row[button[path, click = open_file[path]], button['✕', click = close_file[path], tip = 'Close the file'], gap = 'none', align = 'center', class = 'tab']
+
+view _tabs[]
+    held = open_files
+    if shown ne '' and shown not in held
+        held = push[held, shown]
+    opened = for path in held
+        _tab[path]
+    return row[opened, gap = 'xs', wrap = true, class = 'tabs']
+
+view _header[path]
+    kind = 'file'
+    if is_code
+        kind = 'Crow'
+    if starts[path, 'notebooks/']
+        kind = 'notebook'
+    return row[
+        row[h1[_base_of[path]], p[kind, color = 'muted', size = 'xs'], gap = 's', align = 'center'],
+        row[
+            _view_switch[],
+            _code_actions[],
+            button['History', click = open_history],
+            button['Git', click = open_git],
+            button['Delete', click = delete_file, confirm = 'Delete `path`? Its file goes; its runs stay in the log.'],
+            gap = 's', align = 'center', wrap = true],
+        justify = 'between', align = 'center', wrap = true]
+
+--- cells or text, for a .co file
+view _view_switch[]
+    if not is_code
+        return stack[]
+    if as_text
+        return button['As cells', click = show_as_cells, tip = 'Show the file as cells']
+    return button['As text', click = show_as_text, tip = 'Show the file as one text']
+
+--- what a .co file is run as, whole
+view _code_actions[]
+    if not is_code
+        return stack[]
+    return row[
+        button['Run all', click = run_all, shortcut = 'ctrl+shift+enter meta+shift+enter', tip = 'Run every cell (Ctrl+Shift+Enter)'],
+        dropdown[summary['More'], stack[
+            button['Run the file', click = run_file, tip = 'crow run -i, or its binary where it is compiled'],
+            button['Test the file', click = test_file, tip = 'crow test'],
+            button['Check the file', click = build_file, tip = 'crow build --ir: the type check'],
+            divider[],
+            p['Schedule', color = 'muted', size = 'xs', weight = 'bold'],
+            button['Only when run by hand', click = schedule[0]],
+            button['Every 15 minutes', click = schedule[900]],
+            button['Every hour', click = schedule[3600]],
+            button['Every day', click = schedule[86400]],
+            gap = 'xs', pad = 's'], side = 'right'],
+        gap = 's', align = 'center']
+
+view _line[label, value]
+    return stack[p[label, color = 'muted', size = 'xs', weight = 'bold'], p[value, size = 's'], gap = 'xs']
+
+fn _counted[n, word]
+    if n eq 1
+        return '1 `word`'
+    return '`n` `word`s'
+
+fn _listed[names, none]
+    if len[names] eq 0
+        return none
+    return join[names, ', ']
+
+fn _schedule_words[gap, due]
+    if gap lte 0
+        return 'only when run by hand'
+    if due eq ''
+        return _every_words[gap]
+    return '`_every_words[gap]` · next `_when[due]`'
+
+view _variable[pair]
+    words = split[pair, ' ']
+    return row[p[words[0], font = 'mono', size = 's'], p[join[slice[words, 1, len[words]], ' '], color = 'muted', size = 's'], justify = 'between']
+
+view _variables[]
+    if len[names_left] eq 0
+        return p['run the cells to see the names they leave', color = 'muted', size = 's']
+    rows = for pair in names_left
+        _variable[pair]
+    return stack[rows, gap = 'xs']
+
+view _last_run[]
+    r = runs
+    if len[r] eq 0
+        return _line['Last run', 'never']
+    return _line['Last run', 'run `r.run[0]` · `r.status[0]` · `r.ms[0]` ms · `r.at[0]` · by `r.by[0]`']
+
+view _about[]
+    saved = 'History lists its commits'
+    if versions_for eq shown
+        saved = _counted[len[versions], 'commit']
+    return stack[
+        h2['This file'],
+        _line['Path', shown],
+        _line['Cells', '`len[cell_ids]`'],
+        _line['Versions', saved],
+        _line['Reads', _listed[reads, 'no table']],
+        _line['Writes', _listed[writes, 'no table']],
+        _line['Schedule', _schedule_words[every, next_due]],
+        _last_run[],
+        divider[],
+        p['Variables', color = 'muted', size = 'xs', weight = 'bold'],
+        _variables[],
+        gap = 's', pad = 'm', surface = 'card', border = true, width = '300px', class = 'about']
+
+view _runs_table[]
+    r = runs
+    if len[r] eq 0
+        return p['no runs yet', color = 'muted', size = 's']
+    if len[r] gt 10
+        return table[r, key = 'run', hide = ['notebook'], actions = map[Output = show_run], page = 10]
+    return table[r, key = 'run', hide = ['notebook'], actions = map[Output = show_run]]
+
+view _versions_table[]
+    v = versions
+    if len[v] eq 0
+        return p['no commits yet: the Git drawer commits', color = 'muted', size = 's']
+    if len[v] gt 10
+        return table[v, key = 'version', actions = map[Restore = restore], confirm = map[Restore = 'Make the file hold this commit\'s text again?'], page = 10]
+    return table[v, key = 'version', actions = map[Restore = restore], confirm = map[Restore = 'Make the file hold this commit\'s text again?']]
+
+view _history[]
+    return drawer[
+        stack[
+            row[h2['History'], button['Close', click = close_history, shortcut = 'escape'], justify = 'between', align = 'center'],
+            p['Runs', color = 'muted', size = 'xs', weight = 'bold'],
+            _runs_table[],
+            p['Versions: the file\'s commits', color = 'muted', size = 'xs', weight = 'bold'],
+            _versions_table[],
+            gap = 'm', pad = 'm'],
+        open = history_open, side = 'right']
+
+view _git_state[]
+    if not git_in
+        return stack[
+            p['The code is not a git repository', color = 'muted', size = 's'],
+            row[button['Init', click = init_git, tip = 'git init'], gap = 's'],
+            gap = 's']
+    changes = p['nothing to commit', color = 'muted', size = 's']
+    if git_text ne ''
+        changes = pre[git_text, font = 'mono', size = 's']
+    at_branch = 'on `git_branch_name`'
+    if git_branch_name eq ''
+        at_branch = 'no commits yet'
+    return stack[
+        p[at_branch, font = 'mono', size = 's'],
+        changes,
+        form[field['Message', git_message, type = 'text'], button['Commit', class = 'primary'], submit = commit_git],
+        row[button['Pull', click = pull_git], button['Push', click = push_git], button['Refresh', click = refresh_git], gap = 's'],
+        gap = 's']
+
+view _git[]
+    return drawer[
+        stack[
+            row[h2['Git'], button['Close', click = close_git, shortcut = 'escape'], justify = 'between', align = 'center'],
+            _git_state[],
+            gap = 'm', pad = 'm'],
+        open = git_open, side = 'right']
+
+view _run_output[]
+    return modal[
+        stack[
+            row[h2['Run `run_open`'], button['Close', click = close_run, shortcut = 'escape'], justify = 'between', align = 'center'],
+            scroll[pre[run_text, font = 'mono', size = 's'], height = '420px'],
+            gap = 'm', pad = 'l'],
+        open = run_open gte 0]
+
+view _naming[]
+    return modal[
+        stack[
+            h2['New notebook'],
+            form[field['Name', new_name, type = 'text'], button['Create', class = 'primary'], submit = create],
+            button['Cancel', click = close_naming, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = naming]
+
+view _creating[]
+    return modal[
+        stack[
+            h2['New file'],
+            p['a path inside the project, as app/orders.co or docs/notes.md', color = 'muted', size = 's'],
+            form[field['Path', new_path, type = 'text'], button['Create', class = 'primary'], submit = create_file],
+            button['Cancel', click = close_creating, shortcut = 'escape'],
+            gap = 'm', pad = 'l', class = 'naming'],
+        open = creating]
+
+view _console[]
+    if console eq ''
+        return stack[]
+    return stack[
+        row[p[console_for, color = 'muted', size = 'xs', weight = 'bold'], button['Clear', click = clear_console], justify = 'between', align = 'center'],
+        scroll[pre[console, font = 'mono', size = 's'], height = '260px'],
+        gap = 's', pad = 'm', surface = 'card', border = true, class = 'console']
+
+--- the file as text: shown, or edited and saved
+view _text_view[]
+    if text_editing
+        return stack[
+            row[p['editing', color = 'accent', size = 's', weight = 'bold'], row[button['Save', click = save_text, shortcut = 'ctrl+s meta+s'], button['Cancel', click = cancel_text, shortcut = 'escape'], gap = 'xs'], justify = 'between', align = 'center', class = 'cellbar'],
+            stack[field['', text_draft, lines = 28], class = 'code'],
+            gap = 's', pad = 'm', surface = 'card', border = true]
+    return stack[
+        row[p['text', color = 'muted', size = 's'], button['Edit', click = edit_text], justify = 'between', align = 'center', class = 'cellbar'],
+        pre[file_text, font = 'mono', size = 's'],
+        gap = 's', pad = 'm', surface = 'card', border = true]
+
+view _cells_view[]
+    items = for i in range[len[cell_ids]]
+        cell_view[i]
+    return stack[items, row[button['+ cell', click = add_cell, tip = 'Add a cell at the end'], gap = 's'], gap = 'm']
+
+view _file_view[]
+    if is_code and not as_text
+        return _cells_view[]
+    return _text_view[]
+
+view _first_page[]
+    return stack[
+        h2['No files yet'],
+        p['A notebook is a Crow program whose cells are marked by --- %% lines, run top to bottom: each cell shows what it printed, how it ended and how long it took. Any other file of the project is edited here as text.', color = 'muted'],
+        row[button['New notebook', click = ask_name], button['New file', click = ask_file], gap = 's'],
+        gap = 's', pad = 'l', surface = 'card', border = true]
+
+view _opened[]
+    path = shown
+    if path eq ''
+        return _first_page[]
+    return stack[
+        _tabs[],
+        _header[path],
+        p[run_note, color = 'muted', size = 's'],
+        row[
+            stack[_file_view[], _console[], gap = 'm', fill = 'true', class = 'cells'],
+            _about[],
+            gap = 'm', align = 'start', below = 'tablet', becomes = 'stack'],
+        gap = 'm']
+
+view _body[]
+    return stack[
+        row[_tree[], stack[_opened[], gap = 'm', fill = 'true', class = 'opened'], gap = 'm', align = 'start', below = 'tablet', becomes = 'stack'],
+        _history[],
+        _git[],
+        _run_output[],
+        gap = 'm']
+
+fn _where[path]
+    if path eq ''
+        return 'Code'
+    return 'Code / `path`'
+
+view render[]
+    return stack[
+        workbench.screen['Code', _where[shown], row[button['New notebook', click = ask_name], button['New file', click = ask_file], gap = 's'], _body[]],
+        _naming[],
+        _creating[]]
+
+--- a notebook is made, its cells written and run, what each printed shown
+--- under it with how it ended, and the notebook is a file
+test a_notebook_is_made_written_run_and_kept[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    assert['No files yet' not in html[a], 'the scratch project has its manifest and crowfile']
+    click[a, ask_name]
+    assert[naming]
+    change[a, 'new_name', 'scratch']
+    click[a, create]
+    assert[not naming]
+    assert[notebooks eq ['scratch']]
+    assert[a.shown eq 'notebooks/scratch.co']
+    assert[a.key eq 'scratch']
+    assert[editing eq 0]
+    change[a, 'draft', 'use math\nxs = [1, 2, 3]\nlog[sum[xs]]']
+    click[a, save]
+    click[a, add_cell]
+    assert[editing eq 1]
+    change[a, 'draft', 'log[len[xs] * 100]']
+    click[a, run_all]
+    assert[exists[workspace.notebook_file['scratch']]]
+    shown_html = html[a]
+    assert['>6<' in shown_html]
+    assert['>300<' in shown_html]
+    assert[cell_end eq ['ok', 'ok']]
+    assert[names_left eq ['xs array']]
+    assert[len[runs] eq 1]
+    assert[cell_sources eq ['use math\nxs = [1, 2, 3]\nlog[sum[xs]]', 'log[len[xs] * 100]']]
+    b = app[render, wide = true]
+    click[b, open_notebook['scratch']]
+    assert[b.cell_ids eq [0, 1]]
+    gone = rm[workspace.code[]]
+
+--- a cell writes a table with Magpie and the next cell reads it: the
+--- program runs in the data folder, so the table is a log beside the
+--- others, and the side panel names it read and written
+test a_cell_writes_a_table_the_next_reads[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    click[a, ask_name]
+    change[a, 'new_name', 'tables']
+    click[a, create]
+    change[a, 'draft', 'use magpie, frame\nw = magpie.batch[\'orders\', frame.new[item = [\'apples\', \'pears\'], qty = [3, 5]], by = [\'item\']]']
+    click[a, save]
+    click[a, add_cell]
+    change[a, 'draft', 'log[len[magpie.latest[\'orders\']]]']
+    click[a, run_all]
+    assert[cell_end eq ['ok', 'ok']]
+    assert['>2<' in html[a]]
+    assert['orders' in workspace.tables[]]
+    assert[writes eq ['orders']]
+    assert[reads eq ['orders']]
+    gone = rm[workspace.code[]]
+
+--- a cell that stops shows the stop under it, naming its own line, and
+--- the cells after it are skipped
+test a_stop_shows_under_its_cell[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    click[a, ask_name]
+    change[a, 'new_name', 'broken']
+    click[a, create]
+    change[a, 'draft', 'xs = [1, 2, 3]']
+    click[a, add_cell]
+    change[a, 'draft', 'log[1]\nlog[xs[7]]']
+    click[a, add_cell]
+    change[a, 'draft', 'log[2]']
+    click[a, run_all]
+    assert[cell_end eq ['ok', 'error', 'skipped']]
+    assert['runtime error: line 2: index 7 is out of range' in cell_out[1]]
+    gone = rm[workspace.code[]]
+
+--- a refusal is shown under the cell it names, as that cell's line
+test a_refusal_shows_under_its_cell[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    click[a, ask_name]
+    change[a, 'new_name', 'refused']
+    click[a, create]
+    change[a, 'draft', 'log[1]']
+    click[a, add_cell]
+    change[a, 'draft', 'log[nosuch[1]]']
+    click[a, run_all]
+    assert[cell_end eq ['skipped', 'refused']]
+    assert['line 1, column 5: undefined function' in cell_out[1]]
+    gone = rm[workspace.code[]]
+
+--- a cell moves and is deleted; the file's versions are its commits, made
+--- from the Git drawer, and one is restored
+test cells_move_are_deleted_and_restored[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    click[a, ask_name]
+    change[a, 'new_name', 'order']
+    click[a, create]
+    change[a, 'draft', 'log[\'a\']']
+    click[a, add_cell]
+    change[a, 'draft', 'log[\'b\']']
+    click[a, save]
+    click[a, move_up[1]]
+    assert[cell_sources eq ['log[\'b\']', 'log[\'a\']']]
+    click[a, delete_cell[0]]
+    assert[cell_ids eq [0]]
+    assert[cell_sources eq ['log[\'a\']']]
+    click[a, add_cell]
+    assert[cell_ids eq [0, 1]]
+    click[a, open_git]
+    assert[not a.git_in]
+    click[a, init_git]
+    assert[a.git_in]
+    assert['notebooks/order.co' in a.git_text]
+    change[a, 'git_message', 'the first']
+    named = shell['cd \'`workspace.code[]`\' && git config user.name t && git config user.email t@t']
+    click[a, commit_git]
+    assert[a.git_text eq '']
+    click[a, open_history]
+    assert[len[a.versions] eq 1]
+    click[a, edit[0]]
+    change[a, 'draft', 'log[\'changed\']']
+    click[a, save]
+    assert[cell_sources[0] eq 'log[\'changed\']']
+    first = str[a.versions.version[0]]
+    click[a, restore[first]]
+    assert[cell_sources[0] eq 'log[\'a\']']
+    gone = rm[workspace.code[]]
+
+--- a schedule is kept for the scheduler under the notebook's name, and a
+--- notebook deleted leaves the tree and the schedules
+test a_notebook_is_scheduled_and_deleted[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    click[a, ask_name]
+    change[a, 'new_name', 'nightly']
+    click[a, create]
+    click[a, schedule[86400]]
+    assert[every eq 86400]
+    assert[workspace.scheduled[] eq ['nightly']]
+    click[a, delete_file]
+    assert[notebooks eq []]
+    assert[workspace.scheduled[] eq []]
+    gone = rm[workspace.code[]]
+
+--- a name that exists, or none, is refused with a notice
+test a_notebook_needs_a_new_name[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    click[a, ask_name]
+    click[a, create]
+    assert[notebooks eq []]
+    assert[naming]
+    change[a, 'new_name', 'one']
+    click[a, create]
+    click[a, ask_name]
+    change[a, 'new_name', 'one']
+    click[a, create]
+    assert[notebooks eq ['one']]
+    gone = rm[workspace.code[]]
+
+--- any file of the project is made, opened as text, edited and saved; a
+--- .co file outside notebooks/ is cells too, and the console runs the
+--- type check on it; the tabs hold the open files
+test files_are_made_edited_and_checked[]
+    assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[workspace.code[]]
+    workspace.ready[]
+    a = app[render, wide = true]
+    assert['myna.json' in a.files]
+    click[a, ask_file]
+    change[a, 'new_path', '../escape.md']
+    click[a, create_file]
+    assert[creating, 'a path outside the project is refused']
+    change[a, 'new_path', 'docs/notes.md']
+    click[a, create_file]
+    assert[not creating]
+    assert[a.shown eq 'docs/notes.md']
+    assert[a.text_editing]
+    change[a, 'text_draft', '# notes\n']
+    click[a, save_text]
+    assert[workspace.text_at['docs/notes.md'] eq '# notes\n']
+    assert['docs/notes.md' in a.open_files]
+    click[a, ask_file]
+    change[a, 'new_path', 'app/hello.co']
+    click[a, create_file]
+    assert[a.shown eq 'app/hello.co']
+    assert[a.key eq 'app/hello.co']
+    assert[a.is_code]
+    assert[a.cell_ids eq [0]]
+    click[a, edit[0]]
+    change[a, 'draft', 'log[\'hi\']']
+    click[a, save]
+    click[a, build_file]
+    assert['crow build --ir finished' in a.console, a.console]
+    click[a, run_file]
+    assert['hi' in a.console, a.console]
+    click[a, show_as_text]
+    assert[a.as_text]
+    assert['log[\'hi\']' in html[a]]
+    assert[len[a.open_files] eq 2]
+    click[a, close_file['docs/notes.md']]
+    assert[a.open_files eq ['app/hello.co']]
+    click[a, open_file['myna.json']]
+    assert[not a.is_code]
+    assert['"name"' in html[a]]
+    gone = rm[workspace.code[]]

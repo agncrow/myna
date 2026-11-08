@@ -36,7 +36,7 @@ fn _total[ms]
 
 --- a notebook run whole, as the page runs it, and written to the runs log
 fn _run_one[name, limit]
-    srcs = workspace.sources[name]
+    srcs = workspace.sources_of_key[name]
     n = len[srcs]
     if n eq 0
         return 'empty'

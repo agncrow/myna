@@ -7,6 +7,7 @@
 use web, ui, frame, magpie
 use myna.workspace
 use myna.workbench
+use myna.access
 use myna.queries
 use myna.tiles
 
@@ -85,6 +86,9 @@ fn pick_verb[name]
     verb = name
 
 fn save_query[]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     name = trim[save_name]
     if name eq ''
         notice['Name the query to save it']
@@ -121,6 +125,9 @@ fn open_query[name]
     _run[q]
 
 fn delete_query[name]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     w = workspace.put_query[name, map[verb = ''], str[now[]], false]
     if not w.ok
         notice['The query was not removed: `w.reason`']
@@ -131,6 +138,9 @@ fn delete_query[name]
 --- a saved query pinned to a dashboard as its last tile: a summary as
 --- bars, any other query as a table
 fn pin_query[name]
+    if not access.may_write
+        notice['This needs an editor\'s grant on the open project']
+        return
     dash = pin_to
     if dash eq '' and len[boards] gt 0
         dash = boards[0]
@@ -219,7 +229,7 @@ view _form[]
     return stack[
         row[
             _labelled['Table', select[push[tables, ''], tbl]],
-            _labelled['Verb', row[_verb_button['latest', 'Latest'], _verb_button['summary', 'Summary'], _verb_button['search', 'Search'], gap = 'xs']],
+            _labelled['Verb', row[_verb_button['latest', 'Latest'], _verb_button['summary', 'Summary'], _verb_button['search', 'Search'], _verb_button['run', 'Newest run'], gap = 'xs']],
             gap = 'm', wrap = true, align = 'end'],
         _columns_hint[],
         _verb_fields[],
@@ -294,7 +304,7 @@ view _answer[]
 view _made[]
     if made eq ''
         return stack[]
-    return row[p['The query is the first cell of', size = 's'], a[made, href = '/?current=`made`'], gap = 's', align = 'center']
+    return row[p['The query is the first cell of', size = 's'], a[made, href = '/?current=notebooks/`made`.co'], gap = 's', align = 'center']
 
 view _saved[]
     s = saved
@@ -333,7 +343,7 @@ view render[]
 --- opened again and written into a notebook
 test a_summary_is_asked_saved_and_made_a_notebook[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     w = magpie.batch[workspace.at['orders'], frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 2], shop = ['north', 'south', 'north']], by = ['item']]
     a = app[render, wide = true]
@@ -360,12 +370,12 @@ test a_summary_is_asked_saved_and_made_a_notebook[]
     assert[len[workspace.board_tiles['Sales']] eq 1]
     click[a, delete_query['by shop']]
     assert[len[saved] eq 0]
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
 
 --- a search and the latest rows, and a query that cannot run says why
 test a_search_and_latest_rows_are_asked[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
     workspace.ready[]
     w = magpie.batch[workspace.at['notes'], frame.new[id = [1, 2], body = ['the kitchen table', 'a garden chair']], by = ['id']]
     a = app[render, wide = true]
@@ -381,4 +391,4 @@ test a_search_and_latest_rows_are_asked[]
     click[a, pick_verb['latest']]
     click[a, run_query]
     assert['a garden chair' in html[a]]
-    gone = rm[workspace.home[]]
+    gone = rm[workspace.code[]]
