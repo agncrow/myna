@@ -26,9 +26,11 @@ use myna.drawn
 
 workspace.ready[]
 
---- (the workbench drawn in WebGL is a page built for the web: drawn/main.co,
---- built into drawn/main_web, whose files the server answers)
-serve[3800, wide = true, refresh = 10, files = 'drawn/main_web']
+--- (what Lory draws in WebGL is built for the web: the workbench
+--- drawn/main.co into drawn/main_web, the Code page's editor drawn/edit.co
+--- into drawn/edit_web; web/ links both, and the server answers its files
+--- at /drawn/ and /edit/)
+serve[3800, wide = true, refresh = 10, files = 'web']
 page['/', code.render, url = ['code.current', 'code.naming']]
 page['/catalog', catalog.render, url = ['catalog.picked']]
 page['/jobs', jobs.render]

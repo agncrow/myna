@@ -11,7 +11,9 @@
 --- changes, commits, pulls and pushes. A schedule is kept in the
 --- manifest for the scheduler (scheduler.co, started from Jobs). The
 --- cells' outputs are the session's last run, by position: a change to
---- the cells' order or number forgets them.
+--- the cells' order or number forgets them. The cell or file being edited
+--- is drawn by Lory's editor (drawn/edit.co, mounted by widgets/editor.js):
+--- line numbers, Crow coloured, Tab, Ctrl+S to save, Ctrl+Enter to run.
 use web, ui, frame
 use myna.workspace
 use myna.engine
@@ -375,6 +377,26 @@ fn cancel[]
     editing = -1
     draft = ''
 
+--- what the cell's editor sends (widgets/editor.js, drawing drawn/edit.co):
+--- the text as it is now, kept as the draft — 400 ms after an edit, and
+--- before a press elsewhere lands, so Run and Save read the latest; with
+--- Ctrl+S saved; with Ctrl+Enter saved and run to this cell; with
+--- Ctrl+Shift+Enter every cell run
+fn edited[words]
+    draft = words
+
+fn save_edited[words]
+    draft = words
+    save[]
+
+fn run_edited[words]
+    draft = words
+    run_to[editing]
+
+fn run_all_edited[words]
+    draft = words
+    run_all[]
+
 fn delete_cell[cid]
     if not access.may_write
         notice['This needs an editor\'s grant on the open project']
@@ -561,6 +583,22 @@ fn save_text[]
 fn cancel_text[]
     text_editing = false
     text_draft = ''
+
+--- what the file's editor sends, as a cell's does: the text kept, saved
+--- with Ctrl+S, saved and run whole with Ctrl+Enter
+fn text_edited[words]
+    text_draft = words
+
+fn save_text_edited[words]
+    text_draft = words
+    save_text[]
+
+fn run_text_edited[words]
+    text_draft = words
+    save_text[]
+    if text_editing
+        return
+    run_file[]
 
 --- ---- the console: a file run, tested or type-checked whole ----
 
@@ -764,7 +802,7 @@ view _editor[i, cid, last]
                 button['Delete', click = delete_cell[cid], confirm = 'Delete cell [`i + 1`]?'],
                 gap = 'xs', align = 'center', wrap = true],
             justify = 'between', align = 'center', wrap = true, gap = 's', class = 'cellbar'],
-        stack[field['', draft, lines = 10], class = 'code'],
+        stack[widget['editor', props = map[text = draft, mode = 'cell'], on = map[change = edited, save = save_edited, run = run_edited, whole = run_all_edited]], class = 'code'],
         _output[i],
         gap = 's', pad = 'm', surface = 'card', border = true]
 
@@ -1050,7 +1088,7 @@ view _text_view[]
     if text_editing
         return stack[
             row[p['editing', color = 'accent', size = 's', weight = 'bold'], row[button['Save', click = save_text, shortcut = 'ctrl+s meta+s'], button['Cancel', click = cancel_text, shortcut = 'escape'], gap = 'xs'], justify = 'between', align = 'center', class = 'cellbar'],
-            stack[field['', text_draft, lines = 28], class = 'code'],
+            stack[widget['editor', props = map[text = text_draft, mode = 'file'], on = map[change = text_edited, save = save_text_edited, run = run_text_edited, whole = run_text_edited]], class = 'code'],
             gap = 's', pad = 'm', surface = 'card', border = true]
     return stack[
         row[p['text', color = 'muted', size = 's'], button['Edit', click = edit_text], justify = 'between', align = 'center', class = 'cellbar'],
@@ -1298,8 +1336,13 @@ test files_are_made_edited_and_checked[]
     assert[not creating]
     assert[a.shown eq 'docs/notes.md']
     assert[a.text_editing]
-    change[a, 'text_draft', '# notes\n']
-    click[a, save_text]
+    --- (the text is edited in the Lory-drawn editor, a widget: what it
+    --- sends is the text, kept as the draft and saved)
+    assert['data-crow-widget="editor"' in html[a]]
+    click[a, text_edited['# note']]
+    assert[a.text_draft eq '# note']
+    click[a, save_text_edited['# notes\n']]
+    assert[not a.text_editing]
     assert[workspace.text_at['docs/notes.md'] eq '# notes\n']
     assert['docs/notes.md' in a.open_files]
     click[a, ask_file]
@@ -1310,8 +1353,11 @@ test files_are_made_edited_and_checked[]
     assert[a.is_code]
     assert[a.cell_ids eq [0]]
     click[a, edit[0]]
-    change[a, 'draft', 'log[\'hi\']']
-    click[a, save]
+    click[a, edited['log[\'h\']']]
+    assert[a.draft eq 'log[\'h\']']
+    click[a, save_edited['log[\'hi\']']]
+    assert[editing eq -1]
+    assert[cell_sources eq ['log[\'hi\']']]
     click[a, build_file]
     assert['crow build --ir finished' in a.console, a.console]
     click[a, run_file]

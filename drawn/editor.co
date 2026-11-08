@@ -1,0 +1,602 @@
+--- A text editor drawn by Lory: a file's lines in a box, monospaced, with
+--- line numbers, a caret placed by the keys and the pointer, the wheel to
+--- scroll by the pixel, and Crow's comments, text, numbers and keywords
+--- coloured. The same drawing shows an output read-only (a console that
+--- follows its end). It began as Lory Studio's editor (lory/studio/,
+--- 2026-11-07) and is the Code page's, in edit.co.
+---
+---     ed = editor.of_text[source]
+---     got = editor.typed[c, ed, evs, box, true]    --- the frame's keys and presses
+---     ed = got.ed                                  --- got.saved: Ctrl+S; got.ran: Ctrl+Enter
+---     c = editor.drawn[c, ed, box, true, true]
+---
+--- `box` is the editor's left, top, width and height in CSS pixels. Nothing
+--- is selected yet: a press places the caret, and a paste arrives as text
+--- typed.
+use lory
+
+--- what an editor holds: its lines, the caret's line and column (columns
+--- count characters), the first line shown, the first column shown, the
+--- column the caret keeps going up and down past shorter lines, whether it
+--- was edited since it was read or saved, and where the wheel has turned
+--- the first line to (a fraction of a line kept: the drawing is offset by
+--- it, so the wheel moves the text by the pixel)
+struct Ed [lines, row, col, top, left, want, dirty, spin]
+
+--- what a frame's input made of the editor, whether it asked to save
+--- (Ctrl+S or Cmd+S), and what it asked to run: 'run' (Ctrl+Enter), 'all'
+--- (Ctrl+Shift+Enter) or ''
+struct Typed [ed, saved, ran]
+
+--- the editor holding the text, its caret at the start
+fn of_text[words]
+    t = replace[replace[words, '\r\n', '\n'], '\r', '\n']
+    lines = split[t, '\n']
+    if len[lines] eq 0
+        lines = ['']
+    Ed[lines, 0, 0, 0, 0, 0, false, 0.0]
+
+--- the editor's text, its lines joined
+fn text_of[ed]
+    join[ed.lines, '\n']
+
+--- ---- sizes, in CSS pixels ----
+
+fn size[]
+    13.0
+
+fn line_h[]
+    19.0
+
+fn pad[]
+    6.0
+
+--- a character's cell, in the drawing's pixels: a digit's width, the
+--- widest of the narrow ones in most fonts
+fn cell[c]
+    s = lory.px[c]
+    max[lory.measure[c, '0', size[] * s], size[] * s * 0.6]
+
+--- how many whole lines and columns the box shows
+fn rows_in[box]
+    max[1, int[(box[3] - 2.0 * pad[]) / line_h[]]]
+
+fn _gutter_cols[ed, numbers]
+    if not numbers
+        return 1
+    len['`len[ed.lines]`'] + 2
+
+fn cols_in[c, ed, box, numbers]
+    s = lory.px[c]
+    room = box[2] * s - 2.0 * pad[] * s - _gutter_cols[ed, numbers] * cell[c]
+    max[1, int[room / cell[c]]]
+
+--- ---- editing ----
+
+fn _clamp[n, lo, hi]
+    max[lo, min[hi, n]]
+
+fn _len_of[ed, row]
+    len[ed.lines[row]]
+
+--- the caret moved to a line and column, both kept inside the text
+fn at[ed, row, col]
+    ed.row = _clamp[row, 0, len[ed.lines] - 1]
+    ed.col = _clamp[col, 0, _len_of[ed, ed.row]]
+    ed
+
+--- the text inserted at the caret (a line break in it makes lines), the
+--- caret after it
+fn insert[ed, words]
+    t = replace[replace[words, '\r\n', '\n'], '\r', '\n']
+    if t eq ''
+        return ed
+    line = ed.lines[ed.row]
+    before = slice[line, 0, ed.col]
+    after = slice[line, ed.col, len[line]]
+    pieces = split[t, '\n']
+    if len[pieces] eq 1
+        ed.lines[ed.row] = '`before``t``after`'
+        ed.col = ed.col + len[t]
+    else
+        last = pieces[len[pieces] - 1]
+        made = ['`before``pieces[0]`']
+        for i in range[1, len[pieces] - 1]
+            made = push[made, pieces[i]]
+        made = push[made, '`last``after`']
+        ed.lines = concat[concat[slice[ed.lines, 0, ed.row], made], slice[ed.lines, ed.row + 1, len[ed.lines]]]
+        ed.row = ed.row + len[pieces] - 1
+        ed.col = len[last]
+    ed.want = ed.col
+    ed.dirty = true
+    ed
+
+--- the spaces a line begins with
+fn _indent[line]
+    n = 0
+    chars = split[line, '']
+    while n lt len[chars] and chars[n] eq ' '
+        n = n + 1
+    n
+
+--- Enter: the line broken at the caret, the new line indented as the one
+--- it came from
+fn newline[ed]
+    keep = _indent[ed.lines[ed.row]]
+    if keep gt ed.col
+        keep = ed.col
+    spaces = repeat[' ', keep]
+    insert[ed, '\n`spaces`']
+
+--- Backspace: the character before the caret, or the line break before
+--- its line
+fn back[ed]
+    if ed.col gt 0
+        line = ed.lines[ed.row]
+        ed.lines[ed.row] = '`slice[line, 0, ed.col - 1]``slice[line, ed.col, len[line]]`'
+        ed.col = ed.col - 1
+        ed.want = ed.col
+        ed.dirty = true
+        return ed
+    if ed.row eq 0
+        return ed
+    above = ed.lines[ed.row - 1]
+    joined = '`above``ed.lines[ed.row]`'
+    ed.lines = concat[concat[slice[ed.lines, 0, ed.row - 1], [joined]], slice[ed.lines, ed.row + 1, len[ed.lines]]]
+    ed.row = ed.row - 1
+    ed.col = len[above]
+    ed.want = ed.col
+    ed.dirty = true
+    ed
+
+--- Delete: the character after the caret, or the line break after it
+fn forward[ed]
+    line = ed.lines[ed.row]
+    if ed.col lt len[line]
+        ed.lines[ed.row] = '`slice[line, 0, ed.col]``slice[line, ed.col + 1, len[line]]`'
+        ed.dirty = true
+        return ed
+    if ed.row + 1 gte len[ed.lines]
+        return ed
+    joined = '`line``ed.lines[ed.row + 1]`'
+    ed.lines = concat[concat[slice[ed.lines, 0, ed.row], [joined]], slice[ed.lines, ed.row + 2, len[ed.lines]]]
+    ed.dirty = true
+    ed
+
+--- the caret up or down `n` lines, keeping the column it wants
+fn vertical[ed, n]
+    row = _clamp[ed.row + n, 0, len[ed.lines] - 1]
+    ed.row = row
+    ed.col = min[ed.want, _len_of[ed, row]]
+    ed
+
+fn left_one[ed]
+    if ed.col gt 0
+        ed.col = ed.col - 1
+    else
+        if ed.row gt 0
+            ed.row = ed.row - 1
+            ed.col = _len_of[ed, ed.row]
+    ed.want = ed.col
+    ed
+
+fn right_one[ed]
+    if ed.col lt _len_of[ed, ed.row]
+        ed.col = ed.col + 1
+    else
+        if ed.row + 1 lt len[ed.lines]
+            ed.row = ed.row + 1
+            ed.col = 0
+    ed.want = ed.col
+    ed
+
+--- Home: to the line's first character that is not a space, or, from
+--- there, to its start
+fn home[ed]
+    first = _indent[ed.lines[ed.row]]
+    if ed.col eq first
+        first = 0
+    ed.col = first
+    ed.want = ed.col
+    ed
+
+fn end_of[ed]
+    ed.col = _len_of[ed, ed.row]
+    ed.want = ed.col
+    ed
+
+--- the first line and column shown moved so the caret shows
+fn shown_caret[ed, rows, cols]
+    if ed.row lt ed.top
+        ed.top = ed.row
+    if ed.row gte ed.top + rows
+        ed.top = ed.row - rows + 1
+    ed.spin = float[ed.top]
+    if ed.col lt ed.left
+        ed.left = ed.col
+    if ed.col gte ed.left + cols
+        ed.left = ed.col - cols + 1
+    ed
+
+--- the wheel's turn over the box: lines up or down (a fraction kept), as
+--- far as the text goes
+fn wheeled[ed, dy, rows]
+    most = max[0, len[ed.lines] - rows]
+    ed.spin = max[0.0, min[0.0 + most, ed.spin + dy / line_h[]]]
+    ed.top = int[ed.spin]
+    ed
+
+--- a key pressed, applied: `rows` is how many lines a page is
+fn keyed[ed, key, shift, rows]
+    if key eq 'Enter'
+        return newline[ed]
+    if key eq 'Backspace'
+        return back[ed]
+    if key eq 'Delete'
+        return forward[ed]
+    if key eq 'Tab'
+        if shift
+            return dedent[ed]
+        return insert[ed, repeat[' ', 4 - ed.col % 4]]
+    if key eq 'ArrowLeft'
+        return left_one[ed]
+    if key eq 'ArrowRight'
+        return right_one[ed]
+    if key eq 'ArrowUp'
+        return vertical[ed, -1]
+    if key eq 'ArrowDown'
+        return vertical[ed, 1]
+    if key eq 'Home'
+        return home[ed]
+    if key eq 'End'
+        return end_of[ed]
+    if key eq 'PageUp'
+        ed = vertical[ed, 0 - rows]
+        ed.top = max[0, ed.top - rows]
+        ed.spin = float[ed.top]
+        return ed
+    if key eq 'PageDown'
+        ed = vertical[ed, rows]
+        ed.top = min[max[0, len[ed.lines] - rows], ed.top + rows]
+        ed.spin = float[ed.top]
+        return ed
+    ed
+
+--- Shift+Tab: up to four of the line's leading spaces taken away
+fn dedent[ed]
+    line = ed.lines[ed.row]
+    n = min[4, _indent[line]]
+    if n eq 0
+        return ed
+    ed.lines[ed.row] = slice[line, n, len[line]]
+    ed.col = max[0, ed.col - n]
+    ed.want = ed.col
+    ed.dirty = true
+    ed
+
+--- where a press at (x, y) — the drawing's pixels — puts the caret: the
+--- lines are drawn offset by the fraction the wheel scrolled past
+fn caret_at[c, ed, box, numbers, x, y]
+    s = lory.px[c]
+    frac = ed.spin - float[ed.top]
+    row = ed.top + int[(y - box[1] * s - pad[] * s) / (line_h[] * s) + frac]
+    tx = box[0] * s + pad[] * s + _gutter_cols[ed, numbers] * cell[c]
+    col = ed.left + int[(x - tx) / cell[c] + 0.5]
+    at[ed, row, col]
+
+fn _in_box[c, box, x, y]
+    s = lory.px[c]
+    x gte box[0] * s and y gte box[1] * s and x lt (box[0] + box[2]) * s and y lt (box[1] + box[3]) * s
+
+--- the frame's input applied to the editor, which has the keyboard where
+--- `focused`: what is typed, the keys, a press in the box (the caret
+--- placed) and the wheel over it. Ctrl or Cmd with S asks to save, with
+--- Enter to run (Shift too: to run all)
+fn typed[c, ed, evs, box, focused]
+    saved = false
+    ran = ''
+    rows = rows_in[box]
+    moved = false
+    for e in evs
+        if e.on eq 'wheel' and _in_box[c, box, e.x, e.y]
+            ed = wheeled[ed, e.dy, rows]
+        if e.on eq 'down' and _in_box[c, box, e.x, e.y]
+            ed = caret_at[c, ed, box, true, e.x, e.y]
+            ed.want = ed.col
+        if focused
+            if e.on eq 'text'
+                ed = insert[ed, e.words]
+                moved = true
+            if e.on eq 'key'
+                if e.ctrl or e.meta
+                    if lower[e.key] eq 's'
+                        saved = true
+                    if e.key eq 'Enter'
+                        ran = 'run'
+                        if e.shift
+                            ran = 'all'
+                else
+                    ed = keyed[ed, e.key, e.shift, rows]
+                    moved = true
+    if moved
+        ed = shown_caret[ed, rows, cols_in[c, ed, box, true]]
+    Typed[ed, saved, ran]
+
+--- the console's last line shown: the lines scrolled to the end
+fn follow[ed, box]
+    rows = rows_in[box]
+    ed.top = max[0, len[ed.lines] - rows]
+    ed.spin = float[ed.top]
+    ed
+
+--- ---- colours ----
+
+--- the colours an editor is drawn in
+struct Look [ground, gutter, ink, muted, number, caret, here, keyword, words, digits, comment]
+
+fn dark[]
+    Look[lory.hex['#0b0f13'], lory.hex['#10161c'], lory.hex['#e8edf2'], lory.hex['#8a9bad'], lory.hex['#4b5a6a'], lory.hex['#f6c343'], lory.hex['#151d26'], lory.hex['#c792ea'], lory.hex['#a5d6a7'], lory.hex['#f78c6c'], lory.hex['#6b7d8f']]
+
+fn keywords[]
+    ['fn', 'use', 'struct', 'test', 'if', 'else', 'for', 'in', 'while', 'return', 'and', 'or', 'not', 'eq', 'ne', 'lt', 'gt', 'lte', 'gte', 'view', 'derive', 'true', 'false', 'break', 'continue', 'as']
+
+fn _word_char[ch]
+    ch in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'
+
+--- each character's colour by what it belongs to: a comment (`---` to
+--- the line's end), text (between quotes, a backslash escaping), a
+--- number, a keyword, or the rest
+fn colours[chars, lk]
+    n = len[chars]
+    out = []
+    i = 0
+    quoted = false
+    while i lt n
+        ch = chars[i]
+        if quoted
+            out = push[out, lk.words]
+            if ch eq '\\' and i + 1 lt n
+                out = push[out, lk.words]
+                i = i + 2
+                continue
+            if ch eq '\''
+                quoted = false
+            i = i + 1
+            continue
+        if ch eq '-' and i + 2 lt n + 0 and chars[i + 1] eq '-' and chars[i + 2] eq '-'
+            while i lt n
+                out = push[out, lk.comment]
+                i = i + 1
+            continue
+        if ch eq '\''
+            quoted = true
+            out = push[out, lk.words]
+            i = i + 1
+            continue
+        if _word_char[ch]
+            j = i
+            while j lt n and _word_char[chars[j]]
+                j = j + 1
+            word = join[slice[chars, i, j], '']
+            color = lk.ink
+            if ch in '0123456789'
+                color = lk.digits
+            else
+                if word in keywords[]
+                    color = lk.keyword
+            while i lt j
+                out = push[out, color]
+                i = i + 1
+            continue
+        out = push[out, lk.ink]
+        i = i + 1
+    out
+
+--- ---- drawing ----
+
+--- the editor drawn into its box: its lines from the first shown, offset
+--- by the fraction of a line the wheel scrolled past, line numbers where
+--- `numbers`, and the caret where it is `focused`
+fn drawn[c, ed, box, focused, numbers]
+    lk = dark[]
+    s = lory.px[c]
+    x = box[0] * s
+    y = box[1] * s
+    w = box[2] * s
+    h = box[3] * s
+    c = lory.rect[c, x, y, w, h, lk.ground]
+    edge = lory.hex['#2a3440']
+    if focused
+        edge = lory.hex['#60a5fa']
+    c = lory.outline[c, x, y, w, h, 1.0 * s, edge]
+    kept = lory.clipped[c]
+    c = lory.clip[c, x + 1.0 * s, y + 1.0 * s, w - 2.0 * s, h - 2.0 * s]
+    cw = cell[c]
+    lh = line_h[] * s
+    ts = size[] * s
+    gutter = _gutter_cols[ed, numbers] * cw
+    if numbers
+        c = lory.rect[c, x, y, gutter + pad[] * s * 0.5, h, lk.gutter]
+    tx = x + pad[] * s + gutter
+    first = ed.top
+    frac = ed.spin - float[ed.top]
+    last = min[len[ed.lines], first + rows_in[box] + 2]
+    cols = cols_in[c, ed, box, numbers] + 1
+    --- (the glyphs' line is set a little below the line's top)
+    rise = (lh - lory.line_height[c, ts]) / 2.0
+    for i in range[first, last]
+        ly = y + pad[] * s + (float[i - ed.top] - frac) * lh
+        if focused and i eq ed.row
+            c = lory.rect[c, x + gutter, ly, w - gutter, lh, lk.here]
+        if numbers
+            num_color = lk.number
+            if i eq ed.row
+                num_color = lk.muted
+            c = lory.text_right[c, x + gutter - cw, ly + rise, '`i + 1`', ts, num_color]
+        chars = split[ed.lines[i], '']
+        --- (code coloured; a job's output, drawn without numbers, plain)
+        tints = for ch in chars
+            lk.ink
+        if numbers
+            tints = colours[chars, lk]
+        upto = min[len[chars], ed.left + cols]
+        kept_line = lory.clipped[c]
+        c = lory.clip[c, tx - 1.0 * s, y, w - (tx - x), h]
+        for j in range[ed.left, upto]
+            ch = chars[j]
+            if ch ne ' ' and ch ne '\t'
+                cx = tx + (j - ed.left) * cw
+                gw = lory.measure[c, ch, ts]
+                c = lory.text[c, cx + (cw - gw) / 2.0, ly + rise, ch, ts, tints[j]]
+        c = lory.unclip[c, kept_line]
+    if focused and (int[lory.time[c] / 530.0] % 2) eq 0
+        cy = y + pad[] * s + (float[ed.row - ed.top] - frac) * lh
+        cx = tx + (ed.col - ed.left) * cw
+        if cx gte tx - 1.0 and cy gte y - lh and cy lt y + h
+            c = lory.rect[c, cx - 1.0 * s, cy + 1.0 * s, 2.0 * s, lh - 2.0 * s, lk.caret]
+    lory.unclip[c, kept]
+
+--- ---- tests ----
+
+test typing_makes_lines_and_the_caret_follows[]
+    ed = of_text['fn f[x]\n    return x']
+    ed.lines eq ['fn f[x]', '    return x']
+    ed = at[ed, 1, 12]
+    ed = newline[ed]
+    ed.lines eq ['fn f[x]', '    return x', '    ']
+    ed.row eq 2
+    ed.col eq 4
+    ed = insert[ed, 'log[1]']
+    ed.lines[2] eq '    log[1]'
+    ed.dirty eq true
+    ed = insert[ed, 'a\nb\nc']
+    ed.lines eq ['fn f[x]', '    return x', '    log[1]a', 'b', 'c']
+    ed.row eq 4
+    ed.col eq 1
+    text_of[ed] eq 'fn f[x]\n    return x\n    log[1]a\nb\nc'
+
+test backspace_and_delete_join_lines[]
+    ed = at[of_text['ab\ncd'], 1, 0]
+    ed = back[ed]
+    ed.lines eq ['abcd']
+    ed.col eq 2
+    ed = back[ed]
+    ed.lines eq ['acd']
+    ed = forward[ed]
+    ed.lines eq ['ad']
+    ed = end_of[ed]
+    ed = forward[ed]
+    ed.lines eq ['ad']
+    ed = back[at[of_text['x'], 0, 0]]
+    ed.lines eq ['x']
+
+test the_arrows_keep_the_column_wanted[]
+    ed = at[of_text['long line here\nab\nanother long one'], 0, 10]
+    ed.want = 10
+    ed = vertical[ed, 1]
+    ed.col eq 2
+    ed = vertical[ed, 1]
+    ed.col eq 10
+    ed = left_one[at[ed, 1, 0]]
+    ed.row eq 0
+    ed.col eq 14
+    ed = right_one[ed]
+    ed.row eq 1
+    ed.col eq 0
+    ed = at[of_text['    x = 1'], 0, 9]
+    ed = home[ed]
+    ed.col eq 4
+    ed = home[ed]
+    ed.col eq 0
+
+test tab_indents_to_the_next_four_and_shift_tab_takes_it_back[]
+    ed = keyed[of_text['x'], 'Tab', false, 10]
+    ed.lines eq ['    x']
+    ed.col eq 4
+    ed = keyed[ed, 'Tab', true, 10]
+    ed.lines eq ['x']
+    ed = keyed[at[of_text['ab'], 0, 2], 'Tab', false, 10]
+    ed.lines eq ['ab  ']
+
+test the_caret_is_kept_in_sight[]
+    lines = for i in range[100]
+        'line `i`'
+    ed = of_text[join[lines, '\n']]
+    ed = keyed[ed, 'PageDown', false, 20]
+    ed.row eq 20
+    ed = at[ed, 60, 0]
+    ed = shown_caret[ed, 20, 40]
+    ed.top eq 41
+    ed = wheeled[ed, -1900.0, 20]
+    ed.top eq 0
+    ed = wheeled[ed, 100000.0, 20]
+    ed.top eq 80
+    ed = wheeled[at[ed, 0, 0], -100000.0, 20]
+    ed = wheeled[ed, 9.5, 20]
+    ed.top eq 0
+    --- (half a line scrolled: the first line still shown, the drawing
+    --- offset by half a line)
+    ed.spin eq 0.5
+    ed = wheeled[ed, 9.5, 20]
+    ed.top eq 1
+    ed.spin eq 1.0
+
+test crow_is_coloured_by_what_each_character_is[]
+    lk = dark[]
+    tints = colours[split['x = \'a\' --- note', ''], lk]
+    tints[0] eq lk.ink
+    tints[4] eq lk.words
+    tints[6] eq lk.words
+    tints[8] eq lk.comment
+    tints[15] eq lk.comment
+    k = colours[split['fn f[1]', ''], lk]
+    k[0] eq lk.keyword
+    k[3] eq lk.ink
+    k[5] eq lk.digits
+    e = colours[split['\'it\\\'s\' x', ''], lk]
+    e[4] eq lk.words
+    e[7] eq lk.ink
+
+fn _frame[given]
+    json['{"t": 0, "width": 800, "height": 600, "ratio": 1, "xr": false, "views": [{"eye": "none", "x": 0, "y": 0, "width": 800, "height": 600, "projection": [], "camera": []}], "input": [`given`], "pointers": [], "controllers": [], "said": []}']
+
+--- (each test calls `typed` once: a test block that calls it twice, the
+--- second time with the record the first answered, stops the interpreter
+--- with "an int met a float in 'add'" — Crow's test harness only; the
+--- program runs alike interpreted and compiled)
+test a_frames_text_and_keys_edit_the_text_and_ctrl_s_saves[]
+    box = [10.0, 10.0, 400.0, 300.0]
+    c = lory.begin[_frame['{"type": "text", "text": "ab"}, {"type": "key", "key": "Enter", "code": "Enter"}, {"type": "text", "text": "c"}, {"type": "key", "key": "s", "code": "KeyS", "meta": true}']]
+    got = typed[c, of_text[''], lory.events[c], box, true]
+    got.ed.lines eq ['ab', 'c']
+    got.saved eq true
+    got.ran eq ''
+    d = drawn[c, got.ed, box, true, true]
+    len[d.verts] gt 0
+
+test ctrl_enter_asks_to_run_and_with_shift_to_run_all[]
+    box = [10.0, 10.0, 400.0, 300.0]
+    c = lory.begin[_frame['{"type": "key", "key": "Enter", "code": "Enter", "ctrl": true}']]
+    got = typed[c, of_text['x'], lory.events[c], box, true]
+    got.ran eq 'run'
+    got.saved eq false
+    --- (Enter with Ctrl breaks no line)
+    got.ed.lines eq ['x']
+    s = lory.begin[_frame['{"type": "key", "key": "Enter", "code": "Enter", "meta": true, "shift": true}']]
+    both = typed[s, of_text['x'], lory.events[s], box, true]
+    both.ran eq 'all'
+
+test an_editor_without_the_keyboard_takes_no_keys[]
+    box = [10.0, 10.0, 400.0, 300.0]
+    c = lory.begin[_frame['{"type": "text", "text": "ab"}, {"type": "key", "key": "s", "code": "KeyS", "ctrl": true}']]
+    other = typed[c, of_text[''], lory.events[c], box, false]
+    other.ed.lines eq ['']
+    other.saved eq false
+
+test a_press_places_the_caret_on_its_line_and_column[]
+    box = [10.0, 10.0, 400.0, 300.0]
+    --- (a press on the second line, past its end, puts the caret at its end)
+    p = lory.begin[_frame['{"type": "down", "device": "mouse", "id": 1, "x": 300, "y": 37, "button": 0}']]
+    placed = typed[p, of_text['ab\nc'], lory.events[p], box, true]
+    placed.ed.row eq 1
+    placed.ed.col eq 1

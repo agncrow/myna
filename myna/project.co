@@ -172,7 +172,7 @@ view _fact[label, value]
 view _compile_state[]
     c = compiling
     if c.log eq ''
-        return p['Not compiled from Myna yet: Compile builds every program the manifest names into bin/ (Lory Studio\'s Compile does the same)', color = 'muted', size = 's']
+        return p['Not compiled yet: Compile builds every program the manifest names into bin/', color = 'muted', size = 's']
     return stack[
         _compile_said[c],
         details[summary['The compile\'s log'], scroll[pre[c.log, font = 'mono', size = 's'], height = '320px'], open = c.running],

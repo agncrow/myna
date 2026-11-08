@@ -28,11 +28,21 @@ Under each cell are its output, its status and how long it took:
 
 ## Keys
 
+The cell being edited is drawn by Lory's editor (since 2026-11-07):
+line numbers, Crow coloured, the caret placed by a press, the wheel
+scrolling by the pixel, a paste going in as typed text.
+
 | Key | Does |
 |---|---|
-| Ctrl+Enter | Run |
+| Ctrl+Enter | Save, then run the cells down to this one |
+| Ctrl+Shift+Enter | Save, then run every cell |
 | Ctrl+S | Save |
+| Tab, Shift+Tab | Indent to the next four spaces, take four back |
+| Enter | A new line, indented as the one it came from |
+| Home | The line's first character, then its start |
 | Escape | Cancel an edit |
+
+(Cmd stands for Ctrl on a Mac.)
 
 ## History
 

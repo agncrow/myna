@@ -87,8 +87,8 @@ named, so Run runs it and then refreshes the tiles. Every step writes
 `myna.json`); queries over the table are pinned as above. The notebook
 is the dashboard's program; the file is its code.
 
-**A page with inputs and actions**, by a developer. In Lory Studio or
-any editor, a file `app/orders.co` holds the page: its variables are the
+**A page with inputs and actions**, by a developer. On the Code page or
+in any editor, a file `app/orders.co` holds the page: its variables are the
 inputs, its functions the actions, its `render` view draws them inside
 `myna.screen[…]` (the example above). Two lines register it: in
 `main.co`, `page['/orders', orders.render]`; in `myna.json`,
@@ -114,8 +114,8 @@ page is there. Its tests are Crow's own, in the file (`app[render]`,
 
 **A notebook is a Crow program.** `notebooks/<name>.co` is plain Crow
 with cell marks, `--- %% <title>` lines, so the file runs with
-`crow run`, diffs and reviews as code, and opens in Lory Studio or any
-editor; Myna's notebook page shows it as cells, runs it as one program,
+`crow run`, diffs and reviews as code, and opens in any editor; Myna's
+Code page shows it as cells, runs it as one program,
 and writes the file on save. A save over a file changed since it was
 opened is refused with what changed.
 
@@ -280,29 +280,33 @@ decision, made the same way wherever the data is touched:
 
 ## Editing code
 
-The code is edited in Myna's Code page (not built yet), in any editor,
-or in Myna's notebook page, which edits `notebooks/*.co` as files. The
-Code page is the file tree, an editor and the Build, Compile, Run and
-Test console over the reader's checkout, with git's status, commit and
-push. Its editor is drawn by Lory in WebGL, embedded in the page as the
-drawn workbench (`drawn/`) is; it began as Lory Studio (`lory/studio/`,
-2026-11-07), a separate server over a project's folder, which moves
-into Myna when the page is built and is not kept in Lory's repository:
-Lory is the graphics package, not an application. A project's notebooks
-run in the project's folder, so a cell can `use finch.scanner`, read the
+The code is edited in Myna's Code page (`/`, built 2026-11-07) or in
+any editor: the page is the file tree, the cells or the text of a file,
+the Run, Test and Check console, and the Git drawer over the reader's
+checkout. The cell or file being edited is drawn by Lory in WebGL: the
+editor began as Lory Studio (`lory/studio/`, 2026-11-07), a separate
+server over a project's folder, and moved into Myna as `drawn/editor.co`
+and `drawn/edit.co` when the page took it; Studio is retired, since Lory
+is the graphics package, not an application. A project's notebooks run
+in the project's folder, so a cell can `use finch.scanner`, read the
 project's files and run its programs.
 
-How the Code page is built: it is a page of the workbench, `/code` in
-the sidebar, so the screen's sign-in and grant checks cover it; its
-body is a `widget` whose module mounts the Lory-drawn editor (the
-`crow.js` loader and `main.wasm` built for the web) in the page's own
-element. The editor reaches the files and the jobs through routes
-(`/code/api/…`), and a route has no session — it cannot read `reader` —
-so the page hands the widget a token signed with `web.auth` for the
-reader (their user and role, an hour's expiry), the editor sends it with
-every request, and each route verifies it and checks the grant as a
-handler would: reading a file wants a viewer's, writing and running an
-editor's.
+How the editor is built: the Code page is a page of the workbench, so
+the screen's sign-in and grant checks cover it, and the cell or file
+being edited is `widget['editor', props = map[text = …, mode = …], on =
+map[change = …, save = …, run = …, whole = …]]`. Its module,
+`widgets/editor.js`, mounts the editor program (`drawn/edit.co`, built
+for the web into `drawn/edit_web/` and served at `/edit/` — `web/` links
+it beside the drawn workbench) in the widget's element, gives it the
+text as props, and sends what the editor asks — the text as it is now,
+Ctrl+S, Ctrl+Enter, Ctrl+Shift+Enter — as the widget's events, which
+the page's handlers take as they take a field's text, so a save checks
+the reader's grant as every writing handler does. No route and no token
+were needed: the design had the editor reach the files through
+`/code/api/…` routes with a token signed for the reader, which stays the
+way for a client that is not the page itself. One editor is drawn at a
+time (one WebGL context), and its context is kept between the cells
+edited; the cells not being edited are text the page renders.
 
 ## Myna's pages, each project's own
 
@@ -328,7 +332,7 @@ tiles once Kite is complete.
 Built: projects as folders with a manifest, a data folder and compiled
 programs; the project registry; tile dashboards (kept as rows still);
 Run and Compile; every Myna page reading the open project; the project
-format shared with Lory Studio. The admin section (2026-11-07): users
+format (finchdash/docs/project-format.md). The admin section (2026-11-07): users
 and their roles, grants per project, sign-in with Crow's cookie, the
 Users and Access pages, every page asking for a sign-in once the
 workspace has users and showing a reader with no grant that they have
@@ -346,19 +350,23 @@ files in a tree, the notebooks first, each opened as a tab; a `.co` file
 as cells or as text, any other file as text; a file run, tested or
 type-checked whole with the output in a console under the editor; a git
 drawer with the branch, the changes, Init, Commit, Pull and Push; and
-History listing a file's runs and commits. Its editor is still a plain
-text area.
+History listing a file's runs and commits. Its editor (2026-11-07) is
+Lory's, drawn in WebGL in the cell or file being edited: line numbers,
+Crow coloured, Tab and Shift+Tab, Enter keeping the indent, the wheel
+scrolling by the pixel, Ctrl+S to save, Ctrl+Enter to run, a paste as
+typed text (Editing code, above); Lory Studio's page and server are
+retired.
 
 Not built, in the order to build it:
 
 1. The rest of the admin section: the data route, and Magpie's `allow`
    hook on the door (waiting on a Magpie change under way).
-2. Studio's editor as a Lory widget in every cell and file of the Code
-   page (line numbers, Crow colouring, Tab, Ctrl+S); Lory Studio's page
-   and server retired once it is.
-3. Myna as a package a project depends on (its shell and pages reached by
+2. Myna as a package a project depends on (its shell and pages reached by
    `use myna`); app pages; finchdash's pages.
-4. Programs as scheduled jobs; the project switcher in the sidebar.
-5. Runs reaching the store through the door; a process and a checkout
-   per reader; the workspace server and its forwarding; the Code page
-   (Lory Studio moved into Myna); several data folders per project.
+3. Programs as scheduled jobs; the project switcher in the sidebar.
+4. Runs reaching the store through the door; a process and a checkout
+   per reader; the workspace server and its forwarding; several data
+   folders per project.
+5. The editor's selection, search and a monospaced face (Lory's atlas
+   draws one font); the cells not being edited coloured as the editor
+   colours them.

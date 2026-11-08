@@ -464,7 +464,7 @@ fn _params_line[lines_text]
 view _run_state[]
     if run_mode eq 'compiled'
         return p['compiled: Run starts its binary in bin/', color = 'up', size = 'xs']
-    return p['interpreted: bin/ holds no binary built from the sources as they are (Compile it on the Projects page, or in Lory Studio)', color = 'muted', size = 'xs']
+    return p['interpreted: bin/ holds no binary built from the sources as they are (Compile it on the Projects page)', color = 'muted', size = 'xs']
 
 view _params_editor[]
     if not (editing_params and params_for eq shown)

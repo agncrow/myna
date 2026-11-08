@@ -76,9 +76,9 @@ fn h_run_output[req]
     return text[engine.cleaned[workspace.run_output[run]]]
 
 --- the drawn workbench's address: its page lies in drawn/main_web, which
---- the server's files answer
+--- the server's files answer at /drawn/ (web/drawn links it)
 fn h_drawn[req]
-    return redirect['/index.html']
+    return redirect['/drawn/index.html']
 
 test the_drawn_workbench_reads_the_workspace_as_the_pages_do[]
     assert[workspace.scratch[], 'a test removes its workspace: run the tests with ./test.sh, which sets MYNA_DATA']

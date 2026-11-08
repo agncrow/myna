@@ -21,13 +21,16 @@ for part in myna/query.co myna/dashboards.co myna/project.co myna/users.co myna/
     "$crow" test --compiled "$part"
 done
 rm -rf test_data
-# the workbench drawn by Lory (drawn/main.co): its own tests, run where Lory
-# is installed beside it (crow install in drawn/)
+# what Lory draws for Myna (drawn/): the workbench (main.co) and the Code
+# page's editor (editor.co, edit.co), their own tests, run where Lory is
+# installed beside them (crow install in drawn/)
 if [ -e drawn/crow_modules/lory ]; then
-    echo "== drawn/main.co"
-    (cd drawn && "$crow" test main.co)
+    for part in main.co editor.co edit.co; do
+        echo "== drawn/$part"
+        (cd drawn && "$crow" test "$part")
+    done
 else
-    echo "== drawn/main.co skipped: Lory is not installed (crow install in drawn/)"
+    echo "== drawn/ skipped: Lory is not installed (crow install in drawn/)"
 fi
 # a model trained, tracked, registered, evaluated and served, every number
 # held to the same model trained in Python (needs scikit-learn: the venv

@@ -11,8 +11,9 @@
 ---
 --- A program is compiled when `bin/<name>` is there and its stamp holds
 --- the fingerprint of the project's sources as they are now (computed as
---- Lory Studio computes it, so either reads the other's builds); Run runs
---- the binary then, and interprets the program otherwise.
+--- finchdash/docs/project-format.md sets out, so another tool's builds
+--- read alike); Run runs the binary then, and interprets the program
+--- otherwise.
 use frame, magpie
 use myna.workspace
 use myna.queries
@@ -250,8 +251,8 @@ fn _left_out[rel, name, ws]
     return rel eq 'bin' or rel eq ws
 
 --- every `.co` file of the project and its crowfile, in `sort`'s order:
---- the tree walked as Lory Studio walks it (depth first, at most 4000
---- entries, 12 deep), so the two fingerprints agree
+--- the tree walked as the project format says (depth first, at most 4000
+--- entries, 12 deep), so another tool's fingerprint agrees
 fn sources[folder]
     f = _bare[folder]
     ws = project_of[f].data
@@ -499,7 +500,7 @@ fn test_project[name]
     w3 = write['`folder`/myna.json', hello_manifest['Proj']]
     return folder
 
-test the_names_and_the_fingerprint_are_lory_studios[]
+test the_names_and_the_fingerprint_follow_the_project_format[]
     binary_name['dashboards/scanner.co'] eq 'dashboards_scanner'
     binary_name['main.co'] eq 'main'
     binary_name['9lives.co'] eq 'app_9lives'

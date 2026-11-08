@@ -28,6 +28,20 @@ serves it on port 3800. `crow run -i main.co` interprets it instead, with
 no build, though it takes about two minutes to read the program before
 it serves.
 
+What Lory draws in WebGL — the Code page's editor (`drawn/edit.co`) and
+the drawn workbench (`drawn/main.co`) — is built for the web once, where
+Lory is installed beside it:
+
+```
+cd drawn
+crow install                       # lory, from ../../lory/packages/lory
+crow build --target web edit.co    # the editor → edit_web/, served at /edit/
+crow build --target web main.co    # the workbench → main_web/, served at /drawn/
+```
+
+`web/` links both builds, and the server answers their files. Without
+the editor's build, the Code page's cells say the editor did not load.
+
 ## The pages
 
 - **Projects** (`/projects`): open a Crow project's folder by its whole
@@ -38,9 +52,9 @@ it serves.
   saved queries `queries/*.json`. Code is files in the project, data is
   logs in its data folder (`docs/platform.md`, The rule). The page lists
   each program with whether it is compiled. Compile builds every program
-  into the project's `bin/` in the background, where Lory Studio's
-  Compile puts them too, and both stamp each binary with the same
-  fingerprint of the sources. New project makes a folder with a Hello
+  into the project's `bin/` in the background and stamps each binary with
+  a fingerprint of the sources, so a dashboard runs the binary while it
+  is fresh. New project makes a folder with a Hello
   dashboard whose program writes a table, and `git init`. While no
   project is open, Myna works in its scratch project, `myna_data/scratch`.
   The format is set out in finchdash's `docs/project-format.md`, and
@@ -59,7 +73,12 @@ it serves.
   tests or type-checks the file whole, its output in the console under
   the editor, and sets a schedule (kept in the manifest). The side panel
   names the variables the cells left and the tables they read and write.
-  Ctrl+Enter runs, Ctrl+S saves and Escape cancels an edit. Every save
+  The cell or file being edited is drawn by Lory's editor in WebGL
+  (`drawn/edit.co`, mounted by `widgets/editor.js`): line numbers, Crow
+  coloured, Tab and Shift+Tab, Enter keeping the indent, the wheel
+  scrolling by the pixel, a paste as typed text. Ctrl+Enter saves and
+  runs, Ctrl+Shift+Enter runs every cell, Ctrl+S saves and Escape
+  cancels an edit. Every save
   writes the file; every run is kept with its output. History lists the
   runs and the file's commits and restores one; the Git drawer shows the
   branch and the changes, makes a repository, commits, pulls and pushes.

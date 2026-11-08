@@ -1,0 +1,214 @@
+--- The Code page's editor: one cell or one file in a canvas, drawn by
+--- Lory (editor.co) and mounted by the page's widget module
+--- (widgets/editor.js) — built for the web (`crow build --target web
+--- edit.co` here, into edit_web/) and served at /edit/. The page and the
+--- program speak through what the page gives as input and what the
+--- program prints:
+---
+---   the page gives               the program prints
+---   props, then text (the        @rows N      how many lines it holds
+---     source to edit)            @edit        the text changed this frame
+---   ask (the text, now)          @text <json> the text, as asked
+---   blur (another box took       @save <json> Ctrl+S or Cmd+S: save this
+---     the keyboard)              @run <json>  Ctrl+Enter: save and run
+---   down (a press: the           @all <json>  Ctrl+Shift+Enter: run all
+---     keyboard is its)           @focus 0|1   the keyboard taken or left
+---
+--- A frame draws only when something happened — input, an answer, a new
+--- size, the caret's blink while the editor has the keyboard — so an idle
+--- editor costs nothing.
+use sys
+use memory
+use lory
+use editor
+
+--- what the editor holds between frames: the text, whether it has the
+--- keyboard, whether the next text given is the source to load, how many
+--- lines and whether it was dirty when last told, the canvas's size and
+--- the caret's blink as last drawn, and whether it drew at all yet
+struct App [ed, focus, loading, rows, dirty, w, h, blink, drew]
+
+--- a frame stepped: the canvas (drawn or not), the state, the lines to
+--- print, and whether it drew
+struct Stepped [c, a, lines, painted]
+
+fn fresh[]
+    App[editor.of_text[''], false, false, -1, false, -1.0, -1.0, -1, false]
+
+fn _no_texts[]
+    slice[[''], 0, 0]
+
+--- the text as one printed line: JSON, so its line breaks are escapes
+fn _json[ed]
+    encode[editor.text_of[ed]]
+
+--- the editor's events: the page's own (props, the text that follows,
+--- ask, blur) taken out and applied, a press taking the keyboard
+struct Sorted [a, c, kept, lines]
+
+fn _sorted[a, c, evs]
+    lines = _no_texts[]
+    kept = slice[evs, 0, 0]
+    --- (in order: the text that follows props is the source, not typing)
+    i = 0
+    while i lt len[evs]
+        e = evs[i]
+        i = i + 1
+        if e.on eq 'props'
+            a.loading = true
+            continue
+        if e.on eq 'text' and a.loading
+            a.ed = editor.of_text[e.words]
+            a.loading = false
+            continue
+        if e.on eq 'ask'
+            lines = push[lines, '@text `_json[a.ed]`']
+            continue
+        if e.on eq 'blur'
+            a.focus = false
+            continue
+        if e.on eq 'down'
+            a.focus = true
+            --- (the page's hidden text field takes what is typed, as a
+            --- keyboard's, a phone's or a paste's; opened on every press,
+            --- since a press on the page's own fields closes it)
+            c = lory.keyboard[c, true]
+        kept = push[kept, e]
+    Sorted[a, c, kept, lines]
+
+fn step[c, a]
+    was_focus = a.focus
+    sorted = _sorted[a, c, lory.events[c]]
+    a = sorted.a
+    c = sorted.c
+    lines = sorted.lines
+    s = lory.px[c]
+    box = [0.0, 0.0, lory.width[c] / s, lory.height[c] / s]
+    before = a.ed.lines
+    got = editor.typed[c, a.ed, sorted.kept, box, a.focus]
+    a.ed = got.ed
+    if got.saved
+        lines = push[lines, '@save `_json[a.ed]`']
+    if got.ran eq 'run'
+        lines = push[lines, '@run `_json[a.ed]`']
+    if got.ran eq 'all'
+        lines = push[lines, '@all `_json[a.ed]`']
+    if len[sorted.kept] gt 0 and a.ed.lines ne before
+        lines = push[lines, '@edit']
+    if len[a.ed.lines] ne a.rows
+        a.rows = len[a.ed.lines]
+        lines = push[lines, '@rows `a.rows`']
+    if a.focus ne was_focus
+        flag = 0
+        if a.focus
+            flag = 1
+        lines = push[lines, '@focus `flag`']
+    --- (drawn when something happened: input, an answer such as the font's
+    --- atlas, a new size, or the caret's blink while it has the keyboard)
+    blink = int[lory.time[c] / 530.0] % 2
+    must = not a.drew or len[lory.events[c]] gt 0 or len[lory.said[c]] gt 0 or a.w ne lory.width[c] or a.h ne lory.height[c] or (a.focus and blink ne a.blink)
+    a.blink = blink
+    a.w = lory.width[c]
+    a.h = lory.height[c]
+    if must
+        a.drew = true
+        c = editor.drawn[lory.clear[c, editor.dark[].ground], a.ed, box, a.focus, true]
+    Stepped[c, a, lines, must]
+
+fn draw[frame]
+    a = recall['myna.edit', fresh[]]
+    s = step[lory.begin[frame], a]
+    for line in s.lines
+        log[line]
+    remember['myna.edit', s.a]
+    --- (a frame that drew nothing hands the page nothing: the last drawing
+    --- stays; what Lory holds — the font's atlas — is kept by the frames
+    --- that draw, and every frame that brings an answer draws)
+    if s.painted
+        lory.end[s.c]
+
+sys.frames[draw]
+
+--- ---- tests ----
+
+fn _frame[t, given, said]
+    json['{"t": `t`, "width": 800, "height": 240, "ratio": 1, "xr": false, "views": [{"eye": "none", "x": 0, "y": 0, "width": 800, "height": 240, "projection": [], "camera": []}], "input": [`given`], "pointers": [], "controllers": [], "said": [`said`]}']
+
+--- what a frame asked of the page's text field
+fn _keyboard[c]
+    out = _no_texts[]
+    for call in lory.batch[c]
+        if call[0] eq '@keyboard'
+            out = push[out, call[1]]
+    out
+
+test props_and_the_text_that_follows_load_the_source[]
+    s = step[lory.begin[_frame[0, '{"type": "props"}, {"type": "text", "text": "x = 1\\ny = 2"}', '']], fresh[]]
+    s.a.ed.lines eq ['x = 1', 'y = 2']
+    s.a.ed.dirty eq false
+    --- (the text given is not typed: nothing is edited)
+    '@edit' not in s.lines
+    '@rows 2' in s.lines
+    s.painted eq true
+
+test a_press_takes_the_keyboard_and_typing_edits[]
+    a = fresh[]
+    a.ed = editor.of_text['ab']
+    a.rows = 1
+    a.drew = true
+    s = step[lory.begin[_frame[0, '{"type": "down", "device": "mouse", "id": 1, "x": 100, "y": 20, "button": 0}, {"type": "text", "text": "c"}', '']], a]
+    s.a.focus eq true
+    '@focus 1' in s.lines
+    '@edit' in s.lines
+    s.a.ed.lines eq ['abc']
+    --- (the press opens the page's text field)
+    _keyboard[s.c] eq ['=open']
+    --- (a blur takes the keyboard away: the keys are no longer its)
+    b = step[lory.begin[_frame[100, '{"type": "blur"}, {"type": "text", "text": "z"}', '']], s.a]
+    b.a.focus eq false
+    b.a.ed.lines eq ['abc']
+    '@focus 0' in b.lines
+
+test ctrl_s_and_ctrl_enter_print_the_text_to_save_and_run[]
+    a = fresh[]
+    a.ed = editor.of_text['log[1]']
+    a.focus = true
+    a.rows = 1
+    a.drew = true
+    s = step[lory.begin[_frame[0, '{"type": "key", "key": "s", "code": "KeyS", "ctrl": true}', '']], a]
+    s.lines eq ['@save "log[1]"']
+    r = step[lory.begin[_frame[0, '{"type": "key", "key": "Enter", "code": "Enter", "meta": true}', '']], a]
+    r.lines eq ['@run "log[1]"']
+    e = step[lory.begin[_frame[0, '{"type": "key", "key": "Enter", "code": "Enter", "meta": true, "shift": true}', '']], a]
+    e.lines eq ['@all "log[1]"']
+
+test ask_prints_the_text_as_json[]
+    a = fresh[]
+    a.ed = editor.of_text['a\n\'b\'']
+    a.rows = 2
+    a.drew = true
+    s = step[lory.begin[_frame[0, '{"type": "ask"}', '']], a]
+    s.lines eq ['@text "a\\n\'b\'"']
+
+test a_still_frame_draws_nothing_and_a_blink_draws_when_focused[]
+    a = fresh[]
+    a.ed = editor.of_text['x']
+    a.rows = 1
+    a.drew = true
+    a.w = 800.0
+    a.h = 240.0
+    a.blink = 0
+    still = step[lory.begin[_frame[0, '', '']], a]
+    still.painted eq false
+    len[still.lines] eq 0
+    --- (the same frame with the keyboard: drawn once the blink turns)
+    a.focus = true
+    same = step[lory.begin[_frame[0, '', '']], a]
+    same.painted eq false
+    turned = step[lory.begin[_frame[600, '', '']], a]
+    turned.painted eq true
+    --- (a new size is drawn)
+    a.focus = false
+    a.w = 400.0
+    sized = step[lory.begin[_frame[0, '', '']], a]
+    sized.painted eq true

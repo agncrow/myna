@@ -112,3 +112,9 @@ a.button:hover { border-color: var(--crow-accent); }
 .console pre { margin: 0; white-space: pre-wrap; }
 .opened { min-width: 0; }
 @media (max-width: 900px) { .tree { flex-basis: auto; width: auto !important; } }
+
+/* the Code page's editor, drawn by Lory in a canvas (widgets/editor.js):
+   a cell's grows with its lines; a file's is tall and scrolls inside */
+.code .crow-widget { display: block; }
+.editor-canvas { display: block; width: 100%; border-radius: 4px; touch-action: none; }
+.editor-file { height: min(70vh, 900px); min-height: 320px; }
