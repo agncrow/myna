@@ -47,6 +47,15 @@ derive names
     seen = changed
     return workspace.dashboards[]
 
+--- the page of the app's own that shows a dashboard, by its name (the
+--- tabs link there instead of the tiles)
+derive board_pages
+    seen = changed
+    found = map[]
+    for b in workspace.paged[]
+        found = set[found, b.name, b.page]
+    return found
+
 derive query_names
     seen = changed
     found = []
@@ -575,6 +584,8 @@ view _adding[]
 --- the dashboards as tabs, each a link to its own address, the one shown
 --- marked (the dashboard shown is the first where the address names none)
 view _board_link[name]
+    if name in board_pages
+        return a[name, href = board_pages[name], class = 'boardtab']
     if name eq shown
         return a[name, href = '/dashboards?current=`name`', class = 'boardtab on']
     return a[name, href = '/dashboards?current=`name`', class = 'boardtab']

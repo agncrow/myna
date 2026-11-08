@@ -91,11 +91,28 @@ view sidebar[section]
         side_link['Models', 'bookmark', '/models', section eq 'Models'],
         side_link['Ask', 'mail', '/ask', section eq 'Ask'],
         side_link['Jobs', 'clock', '/jobs', section eq 'Jobs'],
+        _app_links[section],
         divider[],
         _admin_links[section],
         side_link['Settings', 'settings', '/settings', section eq 'Settings'],
         _reader_row[],
         gap = 'xs', pad = 'm', width = '236px', background = 'surface', class = 'side']
+
+--- the app's own pages: the manifest's dashboards that name a page
+--- (docs/platform.md, Myna as a package), listed after Myna's
+derive app_pages
+    tick = now[]
+    return workspace.paged[]
+
+view _app_link[b, section]
+    return side_link[b.name, 'chart', b.page, section eq b.name]
+
+view _app_links[section]
+    if len[app_pages] eq 0
+        return stack[]
+    links = for b in app_pages
+        _app_link[b, section]
+    return stack[divider[], links, gap = 'xs']
 
 --- the workspace's pages an admin has: its users and their grants
 view _admin_links[section]

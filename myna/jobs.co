@@ -79,6 +79,20 @@ derive run_text
         return ''
     return engine.cleaned[workspace.run_output[run_open]]
 
+--- the scheduler's program: the package's (crow_modules/myna in an app,
+--- myna/ in Myna's own checkout)
+fn _scheduler_path[]
+    if exists['crow_modules/myna/scheduler.co']
+        return 'crow_modules/myna/scheduler.co'
+    return 'myna/scheduler.co'
+
+--- the port the page serves on, as myna/main.co noted it (3800 unless noted)
+fn _port[]
+    p = read['`workspace.base[]`/.port']
+    if not p.ok
+        return '3800'
+    return trim[p]
+
 --- the scheduler started in the background, the page's port handed to it
 fn start_scheduler[]
     if not access.is_admin
@@ -87,7 +101,7 @@ fn start_scheduler[]
     home = workspace.home[]
     if exists['`home`/_scheduler.stop']
         gone = rm['`home`/_scheduler.stop']
-    r = shell['nohup crow run -i scheduler.co 3800 >> \'`home`/_scheduler.log\' 2>&1 < /dev/null &']
+    r = shell['nohup crow run -i `_scheduler_path[]` `_port[]` >> \'`home`/_scheduler.log\' 2>&1 < /dev/null &']
     if not r.ok
         notice['The scheduler did not start: `r.reason`']
         return

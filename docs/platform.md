@@ -357,12 +357,28 @@ scrolling by the pixel, Ctrl+S to save, Ctrl+Enter to run, a paste as
 typed text (Editing code, above); Lory Studio's page and server are
 retired.
 
+Myna as a package (2026-11-07): the package is the folder `myna/` — the
+modules, `css/`, `widgets/`, `web/` (links to the web builds) and the
+scheduler — which an app names in its crowfile (`myna = '../myna/myna'`,
+a release later) and imports with `use myna`. The app's `main.co` is
+`myna.ready[port]` (its own folder opened as the project, the workspace
+ready, the styles and widgets linked beside it, the port noted for the
+scheduler), its own `serve[…, files = myna.builds[]]` — a server starts
+only from a program's top level, so the line is the app's — and
+`myna.pages[]`, then its own pages. A dashboard of the manifest with a
+`page` is listed in the sidebar after Myna's sections, and its tab on the
+Dashboards page opens the page. Myna's own `main.co` is the same three
+lines. finchdash is the first app: `app/scanner.co` is finch's VWAP
+Scanner page over the recorded day, with its inputs, its tables and its
+order bar to the paper book.
+
 Not built, in the order to build it:
 
 1. The rest of the admin section: the data route, and Magpie's `allow`
    hook on the door (waiting on a Magpie change under way).
-2. Myna as a package a project depends on (its shell and pages reached by
-   `use myna`); app pages; finchdash's pages.
+2. finchdash's other pages (simulation, jobs, telemetry, execution,
+   budgets, reports); Myna as a released package (a tag, the web builds
+   shipped with it).
 3. Programs as scheduled jobs; the project switcher in the sidebar.
 4. Runs reaching the store through the door; a process and a checkout
    per reader; the workspace server and its forwarding; several data

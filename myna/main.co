@@ -1,0 +1,197 @@
+--- Myna as a package: the workbench's pages and routes, served by an app
+--- that depends on it (docs/platform.md, Myna as a package). An app's
+--- main.co is
+---
+---     use web, ui
+---     use myna
+---     use app.orders
+---     here = myna.ready[3900]
+---     serve[3900, wide = true, refresh = 10, files = myna.builds[]]
+---     pages = myna.pages[]
+---     page['/orders', orders.render]
+---
+--- `ready` opens the app's own folder as the project (an app runs in its
+--- project: the manifest myna.json beside its crowfile), readies the
+--- workspace, links Myna's styles and widgets beside the app (css/,
+--- widgets/) where the app has none of its own, and notes the port for
+--- the scheduler; `serve` is the app's own line, since a server starts
+--- only from a program's top level, and `builds` names Myna's web builds
+--- (the Code page's editor, the drawn workbench) as its files; `pages`
+--- registers every page and route of the workbench, and the app's own
+--- pages follow — the sidebar lists those the manifest's dashboards name
+--- (`"page": "/orders"`). Myna's own main.co does the same from its
+--- checkout.
+use web, ui
+use myna.workspace
+use myna.projects
+use myna.code
+use myna.catalog
+use myna.jobs
+use myna.settings
+use myna.query
+use myna.dashboards
+use myna.project
+use myna.users
+use myna.grants
+use myna.soon
+use myna.mlapi
+use myna.experiments
+use myna.runs
+use myna.models
+use myna.serving
+use myna.drawn
+
+--- the package's folder as the program sees it: crow_modules/myna in an
+--- app, myna/ in Myna's own checkout
+fn folder[]
+    if exists['crow_modules/myna/web']
+        return 'crow_modules/myna'
+    return 'myna'
+
+--- the app's folder opened as the project, where the program runs in one
+--- (a manifest beside it) and it is not the open project yet; '' where
+--- the program is Myna's own checkout, which opens projects by hand
+fn _opened_here[]
+    if not exists['myna.json'] or not exists['crowfile']
+        return ''
+    r = shell['pwd -P']
+    if not r.ok
+        return ''
+    here = trim[r.stdout]
+    if projects.current[] eq here
+        return here
+    opened = projects.open_folder[here]
+    if not opened.ok
+        log['the folder was not opened as the project: `opened.reason`']
+        return ''
+    return here
+
+--- Myna's styles and widgets linked beside an app where it has none of
+--- its own (the page's shell reads css/app.css and widgets/*.js from the
+--- program's folder)
+fn _linked[]
+    f = folder[]
+    if f eq 'myna'
+        return 1
+    for name in ['css', 'widgets']
+        if not exists[name]
+            target = '`f`/`name`'
+            made = shell['ln -s `projects.sq[target]` `projects.sq[name]`']
+    return 1
+
+--- the port the page serves on, kept for the scheduler the Jobs page
+--- starts (it asks the page whether it is still there)
+fn _noted_port[port]
+    base = workspace.base[]
+    if not exists[base]
+        made = mkdir[base]
+    return write['`base`/.port', '`port`']
+
+--- the workbench made ready to serve on a port: the project opened, the
+--- workspace ready, the styles and widgets linked, the port noted;
+--- answers the project's folder ('' for Myna's own checkout)
+fn ready[port]
+    here = _opened_here[]
+    workspace.ready[]
+    linked = _linked[]
+    noted = _noted_port[port]
+    return here
+
+--- the folder of Myna's web builds, for the server's `files`
+fn builds[]
+    return '`folder[]`/web'
+
+--- every page and route of the workbench, registered
+fn pages[]
+    page['/', code.render, url = ['code.current', 'code.naming']]
+    page['/catalog', catalog.render, url = ['catalog.picked']]
+    page['/jobs', jobs.render]
+    page['/settings', settings.render]
+    page['/query', query.render, url = ['query.tbl']]
+    page['/dashboards', dashboards.render, url = ['dashboards.current']]
+    page['/projects', project.render]
+    page['/users', users.render]
+    page['/access', grants.render, url = ['grants.project']]
+    page['/experiments', experiments.render, url = ['experiments.current', 'experiments.tab']]
+    page['/runs/:run_id', runs.render, url = ['runs.run_tab', 'runs.folder']]
+    page['/compare', runs.compare, url = ['runs.runs', 'runs.x_key', 'runs.y_key']]
+    page['/models', models.render, url = ['models.models_tab']]
+    page['/models/:model_name', models.model_page, url = ['models.version']]
+    page['/ask', soon.ask]
+    --- the workbench drawn by Lory, and what it asks for (myna/drawn.co)
+    route['/drawn', 'GET', drawn.h_drawn]
+    route['/drawn/api/tables', 'GET', drawn.h_tables]
+    route['/drawn/api/rows', 'GET', drawn.h_rows]
+    route['/drawn/api/notebooks', 'GET', drawn.h_notebooks]
+    route['/drawn/api/runs', 'GET', drawn.h_runs]
+    route['/drawn/api/run-output', 'GET', drawn.h_run_output]
+    --- MLflow's REST API, which its own client speaks (myna/mlapi.co)
+    route['/version', 'GET', mlapi.h_version]
+    route['/serve/:model/:ref/invocations', 'POST', serving.h_invocations]
+    route['/api/2.0/mlflow/experiments/create', 'POST', mlapi.h_experiment_create]
+    route['/api/2.0/mlflow/experiments/get', 'GET', mlapi.h_experiment_get]
+    route['/api/2.0/mlflow/experiments/get-by-name', 'GET', mlapi.h_experiment_by_name]
+    route['/api/2.0/mlflow/experiments/search', 'POST', mlapi.h_experiment_search]
+    route['/api/2.0/mlflow/experiments/search', 'GET', mlapi.h_experiment_search]
+    route['/api/2.0/mlflow/experiments/update', 'POST', mlapi.h_experiment_update]
+    route['/api/2.0/mlflow/experiments/delete', 'POST', mlapi.h_experiment_delete]
+    route['/api/2.0/mlflow/experiments/restore', 'POST', mlapi.h_experiment_restore]
+    route['/api/2.0/mlflow/experiments/set-experiment-tag', 'POST', mlapi.h_experiment_tag]
+    route['/api/2.0/mlflow/experiments/delete-experiment-tag', 'POST', mlapi.h_experiment_untag]
+    route['/api/2.0/mlflow/runs/create', 'POST', mlapi.h_run_create]
+    route['/api/2.0/mlflow/runs/get', 'GET', mlapi.h_run_get]
+    route['/api/2.0/mlflow/runs/update', 'POST', mlapi.h_run_update]
+    route['/api/2.0/mlflow/runs/delete', 'POST', mlapi.h_run_delete]
+    route['/api/2.0/mlflow/runs/restore', 'POST', mlapi.h_run_restore]
+    route['/api/2.0/mlflow/runs/log-metric', 'POST', mlapi.h_log_metric]
+    route['/api/2.0/mlflow/runs/log-parameter', 'POST', mlapi.h_log_param]
+    route['/api/2.0/mlflow/runs/set-tag', 'POST', mlapi.h_set_tag]
+    route['/api/2.0/mlflow/runs/delete-tag', 'POST', mlapi.h_delete_tag]
+    route['/api/2.0/mlflow/runs/log-batch', 'POST', mlapi.h_log_batch]
+    route['/api/2.0/mlflow/runs/log-inputs', 'POST', mlapi.h_log_inputs]
+    route['/api/2.0/mlflow/runs/outputs', 'POST', mlapi.h_log_outputs]
+    route['/api/2.0/mlflow/runs/search', 'POST', mlapi.h_run_search]
+    route['/api/2.0/mlflow/metrics/get-history', 'GET', mlapi.h_metric_history]
+    route['/api/2.0/mlflow/artifacts/list', 'GET', mlapi.h_artifacts_list]
+    route['/api/2.0/mlflow/logged-models', 'POST', mlapi.h_logged_create]
+    route['/api/2.0/mlflow/logged-models/search', 'POST', mlapi.h_logged_search]
+    route['/api/2.0/mlflow/logged-models/:id', 'GET', mlapi.h_logged_get]
+    route['/api/2.0/mlflow/logged-models/:id', 'PATCH', mlapi.h_logged_finalize]
+    route['/api/2.0/mlflow/logged-models/:id', 'DELETE', mlapi.h_logged_delete]
+    route['/api/2.0/mlflow/logged-models/:id/tags', 'PATCH', mlapi.h_logged_tags]
+    route['/api/2.0/mlflow/logged-models/:id/tags/:key', 'DELETE', mlapi.h_logged_untag]
+    route['/api/2.0/mlflow/registered-models/create', 'POST', mlapi.h_model_create]
+    route['/api/2.0/mlflow/registered-models/get', 'GET', mlapi.h_model_get]
+    route['/api/2.0/mlflow/registered-models/rename', 'POST', mlapi.h_model_rename]
+    route['/api/2.0/mlflow/registered-models/update', 'PATCH', mlapi.h_model_update]
+    route['/api/2.0/mlflow/registered-models/delete', 'DELETE', mlapi.h_model_delete]
+    route['/api/2.0/mlflow/registered-models/search', 'GET', mlapi.h_model_search]
+    route['/api/2.0/mlflow/registered-models/set-tag', 'POST', mlapi.h_model_tag]
+    route['/api/2.0/mlflow/registered-models/delete-tag', 'DELETE', mlapi.h_model_untag]
+    route['/api/2.0/mlflow/registered-models/alias', 'POST', mlapi.h_alias_set]
+    route['/api/2.0/mlflow/registered-models/alias', 'GET', mlapi.h_alias_get]
+    route['/api/2.0/mlflow/registered-models/alias', 'DELETE', mlapi.h_alias_delete]
+    route['/api/2.0/mlflow/registered-models/get-latest-versions', 'POST', mlapi.h_latest_versions]
+    route['/api/2.0/mlflow/registered-models/get-latest-versions', 'GET', mlapi.h_latest_versions]
+    route['/api/2.0/mlflow/model-versions/create', 'POST', mlapi.h_version_create]
+    route['/api/2.0/mlflow/model-versions/get', 'GET', mlapi.h_version_get]
+    route['/api/2.0/mlflow/model-versions/update', 'PATCH', mlapi.h_version_update]
+    route['/api/2.0/mlflow/model-versions/delete', 'DELETE', mlapi.h_version_delete]
+    route['/api/2.0/mlflow/model-versions/search', 'GET', mlapi.h_version_search]
+    route['/api/2.0/mlflow/model-versions/get-download-uri', 'GET', mlapi.h_version_uri]
+    route['/api/2.0/mlflow/model-versions/set-tag', 'POST', mlapi.h_version_tag]
+    route['/api/2.0/mlflow/model-versions/delete-tag', 'DELETE', mlapi.h_version_untag]
+    route['/api/2.0/mlflow/model-versions/transition-stage', 'POST', mlapi.h_version_stage]
+    route['/api/3.0/mlflow/traces', 'POST', mlapi.h_trace_start]
+    route['/api/3.0/mlflow/traces/search', 'POST', mlapi.h_trace_search]
+    route['/api/3.0/mlflow/traces/delete-traces', 'POST', mlapi.h_trace_delete]
+    route['/api/2.0/mlflow/traces/delete-traces', 'POST', mlapi.h_trace_delete]
+    route['/api/3.0/mlflow/traces/batchGet', 'GET', mlapi.h_trace_batch]
+    route['/api/3.0/mlflow/traces/get', 'GET', mlapi.h_trace_get]
+    route['/api/3.0/mlflow/traces/:id', 'GET', mlapi.h_trace_get]
+    route['/api/3.0/mlflow/traces/:id/tags', 'PATCH', mlapi.h_trace_tag]
+    route['/api/3.0/mlflow/traces/:id/tags', 'DELETE', mlapi.h_trace_untag]
+    route['/api/3.0/mlflow/traces/:id/assessments', 'POST', mlapi.h_assessment_create]
+    route['/api/3.0/mlflow/traces/:id/assessments/:aid', 'GET', mlapi.h_assessment_get]
+    route['/api/3.0/mlflow/traces/:id/assessments/:aid', 'DELETE', mlapi.h_assessment_delete]
+    return 1

@@ -39,8 +39,39 @@ crow build --target web edit.co    # the editor → edit_web/, served at /edit/
 crow build --target web main.co    # the workbench → main_web/, served at /drawn/
 ```
 
-`web/` links both builds, and the server answers their files. Without
-the editor's build, the Code page's cells say the editor did not load.
+`myna/web/` links both builds, and the server answers their files.
+Without the editor's build, the Code page's cells say the editor did not
+load.
+
+## Myna as a package
+
+An app built on Myna — finchdash is one — depends on the package folder
+`myna/` (the modules, the styles, the widgets, the web builds' links) and
+serves Myna's pages beside its own, from its own folder, which is the
+open project:
+
+```
+name = 'finchdash'
+deps = map[magpie = 'github.com/agncrow/magpie/packages/magpie@v0.1.1', myna = '../myna/myna']
+```
+
+```
+use web, ui
+use myna
+use app.scanner
+here = myna.ready[3900]
+serve[3900, wide = true, refresh = 10, files = myna.builds[]]
+pages = myna.pages[]
+page['/scanner', scanner.render]
+```
+
+`myna.ready` opens the app's folder as the project, readies the
+workspace (`myna_data/` beside the app), links Myna's `css/` and
+`widgets/` where the app has none of its own, and notes the port for the
+scheduler; `myna.pages` registers every page and route of the workbench.
+A dashboard of the manifest that names a page (`"page": "/scanner"`) is
+listed in the sidebar, and its tab on the Dashboards page opens the page.
+The design is in `docs/platform.md`.
 
 ## The pages
 

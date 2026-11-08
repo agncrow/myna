@@ -135,8 +135,10 @@ struct Tile [title, draw, query]
 
 --- a dashboard: its name, the program Run runs ('' for none), what it is,
 --- its parameters' names and defaults, every how many seconds the
---- scheduler refreshes it (0, never), and its tiles
-struct Board [name, program, about, param_names, param_defaults, every, tiles]
+--- scheduler refreshes it (0, never), its tiles, and the page of the
+--- app's own that shows it ('' for the tiles; docs/platform.md, Myna as
+--- a package)
+struct Board [name, program, about, param_names, param_defaults, every, tiles, page]
 
 --- a notebook's schedule: every how many seconds it runs, since when
 struct Schedule [notebook, every, since]
@@ -217,7 +219,7 @@ fn _tile_query[x]
     return _query_in[tq]
 
 fn _board_in[b]
-    return Board[_field[b, 'name'], _field[b, 'program'], _field[b, 'about'], _each[b, 'params', 'name'], _each[b, 'params', 'default'], _whole[_field[b, 'every'], 0], _tiles_in[b]]
+    return Board[_field[b, 'name'], _field[b, 'program'], _field[b, 'about'], _each[b, 'params', 'name'], _each[b, 'params', 'default'], _whole[_field[b, 'every'], 0], _tiles_in[b], _field[b, 'page']]
 
 fn _boards_in[j]
     found = []
@@ -241,14 +243,10 @@ fn _jobs_in[j]
         found = push[found, Schedule[_field[x, 'notebook'], _whole[_field[x, 'every'], 0], _field[x, 'since']]]
     return found
 
---- the settings a manifest holds: the ones Myna knows (the workspace's
---- name, the time limit, each dashboard's parameters), as a map of text
-fn _setting_keys[boards]
-    found = ['workspace', 'limit']
-    for b in boards
-        found = push[found, 'params · `b.name`']
-    return found
-
+--- the settings a manifest holds, every key, as a map of text: Myna's
+--- own (the workspace's name, the time limit, each dashboard's
+--- parameters) and an app's beside them (the scanner's filters and pins,
+--- say), which `setting` and `put_setting` read and write alike
 fn _settings_in[j, boards]
     m = map[]
     if 'settings' not in j
@@ -256,9 +254,9 @@ fn _settings_in[j, boards]
     s = j['settings']
     if not s.ok
         return m
-    for key in _setting_keys[boards]
-        if key in s
-            m = set[m, key, _field[s, key]]
+    for key in keys[s]
+        name = '`key`'
+        m = set[m, name, _field[s, name]]
     return m
 
 --- a folder's manifest as JSON, parsed (an empty object where there is
@@ -322,6 +320,8 @@ fn _board_json[b]
         _tile_json[t]
     params_inner = join[params, ', ']
     lines = ['    {', '      "name": `_jtext[b.name]`,', '      "program": `_jtext[b.program]`,', '      "about": `_jtext[b.about]`,', '      "every": `b.every`,', '      "params": [`params_inner`],']
+    if b.page ne ''
+        lines = push[lines, '      "page": `_jtext[b.page]`,']
     if len[tiles] eq 0
         lines = push[lines, '      "tiles": []']
     else
@@ -1022,7 +1022,16 @@ fn board_named[name]
     for b in current_manifest[].dashboards
         if b.name eq name
             return b
-    return Board[name, '', '', [], [], 0, []]
+    return Board[name, '', '', [], [], 0, [], '']
+
+--- the dashboards an app's own pages show (each names its page), in the
+--- manifest's order
+fn paged[]
+    kept = []
+    for b in current_manifest[].dashboards
+        if b.page ne ''
+            kept = push[kept, b]
+    return kept
 
 --- a dashboard's tiles in their places: the tile's id (its place, from
 --- 1), its query as JSON (`saved_query` reads it), how it is drawn, its
@@ -1065,7 +1074,7 @@ fn put_board[dash, every, live]
         else
             kept = push[kept, b]
     if live and not found
-        kept = push[kept, Board[dash, '', '', [], [], every, []]]
+        kept = push[kept, Board[dash, '', '', [], [], every, [], '']]
     m.dashboards = kept
     return put_manifest[m]
 
@@ -1080,7 +1089,7 @@ fn put_tiles[dash, tiles]
             b.tiles = tiles
         kept = push[kept, b]
     if not found
-        kept = push[kept, Board[dash, '', '', [], [], 0, tiles]]
+        kept = push[kept, Board[dash, '', '', [], [], 0, tiles, '']]
     m.dashboards = kept
     return put_manifest[m]
 
@@ -1191,7 +1200,7 @@ test the_manifest_is_written_and_read_back[]
     gone = rm[base[]]
     ready[]
     q = map[verb = 'summary', table = 'orders', by = 'shop', of = 'qty', how = 'sum']
-    b = Board['Sales', 'jobs/import.co', 'the day\'s sales', ['day'], ['2026-11-07'], 900, [Tile['By shop', 'bars', q], Tile['Rows', 'table', map[verb = 'latest', table = 'orders', k = '10']]]]
+    b = Board['Sales', 'jobs/import.co', 'the day\'s sales', ['day'], ['2026-11-07'], 900, [Tile['By shop', 'bars', q], Tile['Rows', 'table', map[verb = 'latest', table = 'orders', k = '10']]], '/sales']
     m = Manifest['Proj', 'a "test"', 'data', ['jobs/import.co'], [b], [Schedule['nightly', 3600, '2026-11-07T00:00:00Z']], map[workspace = 'Lab', limit = '90']]
     w = put_manifest[m]
     assert[w.ok]
@@ -1200,6 +1209,8 @@ test the_manifest_is_written_and_read_back[]
     assert[back.about eq 'a "test"']
     assert[back.programs eq ['jobs/import.co']]
     assert[len[back.dashboards] eq 1]
+    assert[back.dashboards[0].page eq '/sales']
+    assert[len[paged[]] eq 1]
     assert[back.dashboards[0].program eq 'jobs/import.co']
     assert[back.dashboards[0].param_names eq ['day']]
     assert[back.dashboards[0].every eq 900]
