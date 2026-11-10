@@ -1,0 +1,210 @@
+--- A table's size and its columns, read off its files and never off its
+--- rows. The Catalog and the drawn workbench list every table with both
+--- on every render, and had read each table whole, twice — `magpie.latest`
+--- for its count, and again for its columns: 44 seconds a render over a
+--- project whose two largest logs hold 400,000 rows each.
+---
+--- The columns are the ones the log's live files and its pending rows
+--- hold together (magpie.sequencer's `shape_of`: their footers), which
+--- is what a read answers. The rows of a log with no keys are its live
+--- files' rows, which their footers count. A keyed log holds one row a
+--- key, so its count needs its keys read — the key columns alone — and
+--- is kept for the process while the log's files stay as they were:
+--- each live file's path, rows, positions, size and the time it was
+--- written are the stamp the count is kept under, so a log written to,
+--- merged or made again at its path is counted anew.
+use frame, magpie, memory, sys
+use magpie.manifest
+use magpie.sequencer
+use magpie.merger
+
+--- a keyed log's count, and the stamp of the files it was counted from
+struct Kept [stamp, rows]
+
+--- whether the row of the log's listing (`magpie.batches`) is a file a
+--- read reaches: a batch, a segment or the pending rows, holding a
+--- position (an empty log is one row whose last position is -1, and a
+--- batch a segment already holds is stale)
+fn _live[b, i]
+    return b.last[i] gt -1 and (b.form[i] eq 'batch' or b.form[i] eq 'segment' or b.form[i] eq 'pending')
+
+--- the paths of the log's live files, as its readers take them
+fn _paths[b]
+    found = slice[['x'], 0, 0]
+    for i in range[len[b]]
+        if _live[b, i]
+            found = push[found, '`b.path[i]`']
+    return found
+
+--- a file's size and the time it was written, as a stamp holds them:
+--- `gone` where a merge replaced the file after it was listed
+fn _written[path]
+    size = sys.filesize[path]
+    if not size.ok
+        return 'gone'
+    when = sys.modified[path]
+    if not when.ok
+        return 'gone'
+    return '`size` `float[when]`'
+
+--- the log's live files as text, a line each: its path, rows and
+--- positions, and a file's size and the time it was written (the
+--- pending rows are no file: their path names their positions)
+fn _stamp[b]
+    marks = slice[['x'], 0, 0]
+    for i in range[len[b]]
+        if _live[b, i]
+            path = '`b.path[i]`'
+            mark = '`path` `b.rows[i]` `b.first[i]` `b.last[i]`'
+            if '/.pending' not in path
+                mark = '`mark` `_written[path]`'
+            marks = push[marks, mark]
+    return join[marks, '\n']
+
+--- `columns[dir]`: the log's columns as a read answers them (`_pos`
+--- among them), off its files' footers and its pending rows — none for
+--- no log, for an empty one, and for one a read refuses (a column held
+--- in two kinds)
+fn columns[dir]
+    none = slice[['x'], 0, 0]
+    b = magpie.batches[dir]
+    if not b.ok
+        return none
+    paths = _paths[b]
+    if len[paths] eq 0
+        return none
+    s = sequencer.shape_of[paths]
+    if not s.ok
+        return none
+    return s.names
+
+--- `rows[dir]`: how many rows the log holds as a table — what
+--- `len[magpie.latest[dir]]` answers — with no row read where the log
+--- has no keys, and its key columns alone where it has, once for the
+--- files as they are; 0 for no log, for an empty one, and for one a read
+--- refuses
+fn rows[dir]
+    b = magpie.batches[dir]
+    if not b.ok
+        return 0
+    paths = _paths[b]
+    if len[paths] eq 0
+        return 0
+    --- a log a read refuses is no table to count
+    s = sequencer.shape_of[paths]
+    if not s.ok
+        return 0
+    m = manifest.listed[dir]
+    if not m.ok
+        return 0
+    if len[m.keys] eq 0
+        total = 0
+        for i in range[len[b]]
+            if _live[b, i]
+                total = total + b.rows[i]
+        return total
+    stamp = _stamp[b]
+    name = 'myna/tally/`canonical[dir]`'
+    kept = recall[name, Kept['', 0]]
+    if kept.stamp eq stamp
+        return kept.rows
+    f = magpie.latest[dir, columns = m.keys]
+    if not f.ok
+        return 0
+    n = len[f]
+    remember[name, Kept[stamp, n]]
+    return n
+
+--- what the whole read answers, which the tests hold `rows` and
+--- `columns` to: -1 and no columns where it is refused
+fn _read_rows[dir]
+    f = magpie.latest[dir]
+    if not f.ok
+        return -1
+    return len[f]
+
+fn _read_columns[dir]
+    none = slice[['x'], 0, 0]
+    f = magpie.latest[dir]
+    if not f.ok
+        return none
+    return f.columns
+
+--- the folder the tests write their logs in, inside the tests' own
+--- workspace, and whether that workspace is theirs to remove
+fn _room[]
+    root = env['MYNA_DATA', 'myna_data']
+    return '`root`/tally'
+
+fn _own[]
+    return env['MYNA_DATA', 'myna_data'] ne 'myna_data'
+
+--- a log with no keys is counted off its files, a row never read, and
+--- its columns are the ones a read answers
+test a_log_with_no_keys_is_counted_off_its_files[]
+    assert[_own[], 'a test writes and removes logs: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[_room[]]
+    d = '`_room[]`/events'
+    assert[rows[d] eq 0]
+    assert[len[columns[d]] eq 0]
+    w = magpie.batch[d, frame.new[what = ['a', 'b', 'c'], n = [1, 2, 3]]]
+    w = magpie.batch[d, frame.new[what = ['d', 'e'], n = [4, 5]]]
+    assert[rows[d] eq 5]
+    assert[rows[d] eq _read_rows[d]]
+    assert[columns[d] eq _read_columns[d]]
+    assert['what' in columns[d] and '_pos' in columns[d]]
+    gone = rm[_room[]]
+
+--- a keyed log is counted by its keys — a key written again is one row
+--- still — and the count and the columns follow the log as it grows
+test a_keyed_log_is_counted_by_its_keys[]
+    assert[_own[], 'a test writes and removes logs: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[_room[]]
+    d = '`_room[]`/orders'
+    w = magpie.batch[d, frame.new[item = ['apples', 'pears', 'plums'], qty = [3, 5, 2]], by = ['item']]
+    assert[rows[d] eq 3]
+    w = magpie.batch[d, frame.new[item = ['pears', 'figs'], qty = [9, 7]]]
+    assert[rows[d] eq 4]
+    assert[rows[d] eq _read_rows[d]]
+    assert[columns[d] eq _read_columns[d]]
+    w = magpie.batch[d, frame.new[item = ['dates'], qty = [1], shop = ['east']]]
+    assert[rows[d] eq 5]
+    assert[rows[d] eq _read_rows[d]]
+    assert['shop' in columns[d]]
+    assert[columns[d] eq _read_columns[d]]
+    gone = rm[_room[]]
+
+--- the count is kept while the log's files stay as they were, and a log
+--- removed and written again at its path — as many rows in one file,
+--- one key among them — is counted anew: its file is another
+test a_log_made_again_at_its_path_is_counted_anew[]
+    assert[_own[], 'a test writes and removes logs: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[_room[]]
+    d = '`_room[]`/orders'
+    w = magpie.batch[d, frame.new[id = [1, 2, 3], qty = [3, 5, 2]], by = ['id']]
+    assert[rows[d] eq 3]
+    kept = recall['myna/tally/`canonical[d]`', Kept['', 0]]
+    assert[kept.rows eq 3]
+    assert[kept.stamp ne '']
+    assert[rows[d] eq 3]
+    gone = rm[d]
+    w = magpie.batch[d, frame.new[id = [7, 7, 7], qty = [1, 2, 3]], by = ['id']]
+    assert[rows[d] eq 1]
+    assert[rows[d] eq _read_rows[d]]
+    gone = rm[_room[]]
+
+--- a log holding a column in two kinds, as an older Magpie wrote them,
+--- is refused by every read: it is listed with no rows and no columns
+test a_log_a_read_refuses_is_no_table[]
+    assert[_own[], 'a test writes and removes logs: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[_room[]]
+    none = slice[['x'], 0, 0]
+    d = '`_room[]`/old'
+    made = shell['mkdir -p \'`d`\'']
+    k = manifest.declare[d, ['id'], none, none]
+    w = merger.write_batch[d, 0, 0, frame.new[id = [1], pnl = ['1.5']], ['id'], none]
+    w = merger.write_batch[d, 1, 1, frame.new[id = [2], pnl = [2.5]], ['id'], none]
+    assert[_read_rows[d] eq -1]
+    assert[rows[d] eq 0]
+    assert[len[columns[d]] eq 0]
+    gone = rm[_room[]]

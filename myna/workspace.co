@@ -13,6 +13,7 @@
 --- handed what it reads and answers values, so the pages and the
 --- scheduler call them alike.
 use frame, magpie
+use myna.tally
 
 --- ---- the folders ----
 
@@ -1162,26 +1163,22 @@ fn tables[]
                     mine = push[mine, e]
     return concat[mine, own]
 
---- a table's newest rows, as many as asked, and its size
+--- a table's newest rows, as many as asked
 fn table_rows[name, n]
     f = magpie.latest[_at[name]]
     if not f.ok
         return f
     return head[f, n]
 
+--- a table's size and its columns, off its files (myna/tally.co): the
+--- pages that list every table ask both of each on every render, and a
+--- read of the table for either had made a render of a large project's
+--- catalog 44 seconds
 fn table_count[name]
-    f = magpie.latest[_at[name]]
-    if not f.ok
-        return 0
-    return len[f]
+    return tally.rows[_at[name]]
 
 fn table_columns[name]
-    found = []
-    f = magpie.latest[_at[name]]
-    if not f.ok
-        return found
-    found = f.columns
-    return found
+    return tally.columns[_at[name]]
 
 --- a file's cells: the text before the first mark is the first cell, a
 --- file without marks is one cell, and the cells written are read back

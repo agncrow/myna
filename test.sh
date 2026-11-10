@@ -11,7 +11,7 @@ set -euo pipefail
 crow="${1:-crow}"
 cd "$(dirname "$0")"
 export MYNA_DATA=test_data
-parts="myna/workspace.co myna/engine.co myna/queries.co myna/query.co myna/tiles.co myna/projects.co myna/access.co myna/dashboards.co myna/project.co myna/users.co myna/grants.co myna/code.co myna/catalog.co myna/jobs.co myna/settings.co myna/tracking.co myna/search.co myna/registry.co myna/traces.co myna/mlapi.co myna/charts.co myna/experiments.co myna/runs.co myna/serving.co myna/models.co myna/drawn.co"
+parts="myna/tally.co myna/workspace.co myna/engine.co myna/queries.co myna/query.co myna/tiles.co myna/projects.co myna/access.co myna/dashboards.co myna/project.co myna/users.co myna/grants.co myna/code.co myna/catalog.co myna/jobs.co myna/settings.co myna/tracking.co myna/search.co myna/registry.co myna/traces.co myna/mlapi.co myna/charts.co myna/experiments.co myna/runs.co myna/serving.co myna/models.co myna/drawn.co"
 for part in $parts; do
     echo "== $part"
     "$crow" test "$part"

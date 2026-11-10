@@ -6,6 +6,7 @@ Myna is a Crow program of parts, laid out as Magpie's repository is.
 |---|---|
 | `main.co` | Serves the pages |
 | `myna/workspace.co` | Reads and writes the logs |
+| `myna/tally.co` | A table's size and its columns, read off its files and never off its rows |
 | `myna/engine.co` | Makes a notebook into one program, runs it, and reads its output back cell by cell |
 | `myna/workbench.co` | The frame every page shares: the sidebar, the top bar and the search |
 | `myna/queries.co` | Runs a query, writes it as a cell's Crow, and says it in a line; the dashboards read saved queries through it |

@@ -205,6 +205,8 @@ a running Myna.
 
 - `main.co` serves the pages.
 - `myna/workspace.co` reads and writes the logs.
+- `myna/tally.co` answers a table's size and its columns off its files,
+  a row never read, for the pages that list every table.
 - `myna/engine.co` makes a notebook into one program, runs it, and reads
   its output back cell by cell.
 - `myna/workbench.co` is the frame every page shares: the sidebar, the
