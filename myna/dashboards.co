@@ -11,7 +11,7 @@
 --- binary built from the sources as they are and interpreted otherwise,
 --- keeps the run in _runs, and refreshes the tiles, whose queries read the
 --- tables the program wrote (myna/projects.co).
-use web, ui, frame
+use web, ui, frame, magpie
 use myna.workspace
 use myna.workbench
 use myna.access
