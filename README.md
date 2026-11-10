@@ -52,7 +52,7 @@ open project:
 
 ```
 name = 'finchdash'
-deps = map[magpie = 'github.com/agncrow/magpie/packages/magpie@v0.1.1', myna = '../myna/myna']
+deps = map[magpie = 'github.com/agncrow/magpie/packages/magpie@v0.1.2', myna = '../myna/myna']
 ```
 
 ```

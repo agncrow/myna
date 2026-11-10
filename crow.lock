@@ -1,2 +1,2 @@
 # crow.lock — the commit each dependency checked out, and the hash of what was installed; commit this file
-magpie = 'github.com/agncrow/magpie/packages/magpie@v0.1.1' bcb20a41b057199495ecf13735be2ca2bc203741 sha256:a8a1dc458a002a8be4ab3eec562264daff5c691a34023a3b2eefd0e7fad4d510
+magpie = 'github.com/agncrow/magpie/packages/magpie@v0.1.2' 43055a3dd4a9cbee17948222731a273aae361b1f sha256:907f79c094fdf9fcb60f64caa055990aa5df9da4bab8c8bd0efa855c956baf42

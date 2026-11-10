@@ -175,7 +175,7 @@ fn new_project[folder, name]
         return error['The folder was not made: `made.stderr`', 'myna']
     q = '\''
     plain = replace[n, q, '']
-    crowfile = 'name = `q``plain``q`\ndeps = map[magpie = \'github.com/agncrow/magpie/packages/magpie@v0.1.1\']\n'
+    crowfile = 'name = `q``plain``q`\ndeps = map[magpie = \'github.com/agncrow/magpie/packages/magpie@v0.1.2\']\n'
     w1 = write['`f`/crowfile', crowfile]
     if not w1.ok
         return error['The crowfile was not written: `w1.reason`', 'myna']
@@ -493,7 +493,7 @@ fn test_project[name]
         return error['The folder the tests run in is not known', 'myna']
     folder = '`trim[here.stdout]`/`workspace.base[]`/`name`'
     made = shell['mkdir -p `sq[folder]`/dashboards `sq[folder]`/data']
-    w1 = write['`folder`/crowfile', 'name = \'proj\'\ndeps = map[magpie = \'github.com/agncrow/magpie/packages/magpie@v0.1.1\']\n']
+    w1 = write['`folder`/crowfile', 'name = \'proj\'\ndeps = map[magpie = \'github.com/agncrow/magpie/packages/magpie@v0.1.2\']\n']
     --- (the packages Myna's checkout installed, as `crow install` would)
     linked = shell['ln -s ../../crow_modules `sq[folder]`/crow_modules']
     w2 = write['`folder`/dashboards/hello.co', hello_program[]]

@@ -2,4 +2,4 @@
 --- port 3800; ./test.sh runs its tests. Its logs live under myna_data/
 --- beside the program.
 name = 'myna'
-deps = map[magpie = 'github.com/agncrow/magpie/packages/magpie@v0.1.1']
+deps = map[magpie = 'github.com/agncrow/magpie/packages/magpie@v0.1.2']
