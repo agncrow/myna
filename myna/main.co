@@ -21,6 +21,11 @@
 --- pages follow — the sidebar lists those the manifest's dashboards name
 --- (`"page": "/orders"`). Myna's own main.co does the same from its
 --- checkout.
+---
+--- An app with a widget or a web build of its own keeps them in folders
+--- of its own: a module in widgets/ (Myna's widgets are linked in beside
+--- it), a build in web/ (linked there by the app: `web/charts`, served at
+--- /charts/, with Myna's builds linked in beside it).
 use web, ui
 use myna.workspace
 use myna.projects
@@ -66,9 +71,12 @@ fn _opened_here[]
         return ''
     return here
 
---- Myna's styles and widgets linked beside an app where it has none of
---- its own (the page's shell reads css/app.css and widgets/*.js from the
---- program's folder)
+--- Myna's styles and widgets linked beside an app (the page's shell reads
+--- css/app.css and widgets/*.js from the program's folder): the whole
+--- folder where the app has none of its own, and, where the app keeps a
+--- widgets/ folder of its own modules, each of Myna's widgets it does not
+--- hold linked into it — so an app adds a widget by keeping its module in
+--- widgets/, beside Myna's
 fn _linked[]
     f = folder[]
     if f eq 'myna'
@@ -77,7 +85,27 @@ fn _linked[]
         if not exists[name]
             target = '`f`/`name`'
             made = shell['ln -s `projects.sq[target]` `projects.sq[name]`']
+    --- (a widgets/ that is the link to Myna's holds Myna's modules already)
+    own = shell['test -L widgets && echo link || echo folder']
+    if own.ok and trim[own.stdout] eq 'folder'
+        also = _each_linked['`f`/widgets', 'widgets']
     return 1
+
+--- every entry of Myna's folder `from` linked into the app's folder `into`
+--- where the app holds none of that name (a link left dangling is made
+--- again)
+fn _each_linked[from, into]
+    names = ls[from]
+    if not names.ok
+        return 0
+    made = 0
+    for n in names
+        link = '`into`/`n`'
+        if not exists[link]
+            target = '../`from`/`n`'
+            done = shell['ln -sfn `projects.sq[target]` `projects.sq[link]`']
+            made = made + 1
+    return made
 
 --- the port the page serves on, kept for the scheduler the Jobs page
 --- starts (it asks the page whether it is still there)
@@ -97,9 +125,17 @@ fn ready[port]
     noted = _noted_port[port]
     return here
 
---- the folder of Myna's web builds, for the server's `files`
+--- the folder of web builds, for the server's `files`: Myna's own (the
+--- Code page's editor at /edit/, the drawn workbench at /drawn/), or,
+--- where the app keeps a web/ folder of its own builds, that folder with
+--- Myna's builds linked into it beside the app's
 fn builds[]
-    return '`folder[]`/web'
+    f = folder[]
+    mine = '`f`/web'
+    if f eq 'myna' or not exists['web']
+        return mine
+    linked = _each_linked[mine, 'web']
+    return 'web'
 
 --- every page and route of the workbench, registered
 fn pages[]

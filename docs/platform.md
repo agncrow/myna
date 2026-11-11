@@ -372,6 +372,17 @@ lines. finchdash is the first app: `app/scanner.co` is finch's VWAP
 Scanner page over the recorded day, with its inputs, its tables and its
 order bar to the paper book.
 
+An app's own widgets and web builds (2026-11-10): the page's shell reads
+`widgets/*.js` from the program's folder and the server hands out one
+folder of files, so an app that draws something of its own — finchdash's
+charts, a Crow program drawn by Lory and Kite and built for the web —
+keeps both folders itself. With a `widgets/` folder of its own modules,
+`myna.ready` links each of Myna's widgets into it (the Code page's editor
+beside the app's chart); with a `web/` folder holding a link to its
+build, `myna.builds` links Myna's builds into it (`/edit/`, `/drawn/`
+beside the app's `/charts/`) and answers `web` as the server's files.
+Myna's own folders are linked whole where the app has neither, as before.
+
 Not built, in the order to build it:
 
 1. The rest of the admin section: the data route, and Magpie's `allow`

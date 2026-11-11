@@ -69,6 +69,11 @@ page['/scanner', scanner.render]
 workspace (`myna_data/` beside the app), links Myna's `css/` and
 `widgets/` where the app has none of its own, and notes the port for the
 scheduler; `myna.pages` registers every page and route of the workbench.
+An app with a widget of its own keeps `widgets/` as a folder holding its
+module, and `myna.ready` links Myna's widgets into it; one with a web
+build of its own keeps `web/` holding a link to the build, and
+`myna.builds` links Myna's builds into it and names it as the server's
+files (finchdash's charts: `widgets/chart.js`, `web/charts`).
 A dashboard of the manifest that names a page (`"page": "/scanner"`) is
 listed in the sidebar, and its tab on the Dashboards page opens the page.
 The design is in `docs/platform.md`.
