@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Introducing Myna: a data and machine-learning workbench written in Crow</title>
+<meta name="description" content="Notebooks, queries, dashboards, experiments and models over one folder of Magpie logs.">
+<link rel="canonical" href="https://agncrow.github.io/myna/">
+<link rel="icon" type="image/svg+xml" href="myna.svg">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Myna">
+<meta property="og:title" content="Introducing Myna: a data and machine-learning workbench written in Crow">
+<meta property="og:description" content="Notebooks, queries, dashboards, experiments and models over one folder of Magpie logs.">
+<meta property="og:url" content="https://agncrow.github.io/myna/">
+<meta property="og:image" content="https://agncrow.github.io/myna/myna-social.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="The Myna icon, Crow's (o.o) face between two amber quotation marks, beside the name Myna">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout as Magpie's article: one reading column (68ch) for prose; screenshots and tables widen to 1040px. Amber is Myna's mark and the log. */
+:root {
+  --bg: #f6f7f5; --panel: #ffffff; --fg: #1b2126; --muted: #56626b; --line: #d3d9d6;
+  --accent: #1f5f8b; --accent-soft: #e4eef6; --log: #a8680a; --log-soft: #fbefd9;
+  --band: rgba(27,33,38,0.04); --bad: #b3261e; --bad-soft: #fbe9e7;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #15191c; --panel: #1c2226; --fg: #e5e9e8; --muted: #9ba6ad; --line: #2e373d;
+  --accent: #7bb8e4; --accent-soft: #1d3140; --log: #e8a53c; --log-soft: #3a2c12;
+  --band: rgba(229,233,232,0.05); --bad: #f2938c; --bad-soft: #3d1f1d; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #15191c; --panel: #1c2226; --fg: #e5e9e8; --muted: #9ba6ad; --line: #2e373d;
+  --accent: #7bb8e4; --accent-soft: #1d3140; --log: #e8a53c; --log-soft: #3a2c12;
+  --band: rgba(229,233,232,0.05); --bad: #f2938c; --bad-soft: #3d1f1d; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 17px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 96px; }
+main { max-width: 1040px; margin: 0 auto; }
+.prose { max-width: 68ch; }
+h1, h2, h3, h4 { font-family: var(--display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(30px, 4.4vw, 44px); font-weight: 700; letter-spacing: -0.01em; max-width: 24ch; }
+.part { margin-top: 112px; padding-top: 22px; border-top: 4px solid var(--log); max-width: 68ch; }
+.part .part-num { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--log); }
+.part h2 { font-size: clamp(28px, 3.6vw, 36px); font-weight: 700; margin-top: 8px; }
+.part p { color: var(--muted); font-size: 18px; margin: 10px 0 0; }
+h3 { font-size: 27px; font-weight: 600; margin-top: 72px; padding-top: 18px; border-top: 2px solid var(--fg); }
+.part + section > h3 { margin-top: 44px; }
+h4 { font-size: 19px; font-weight: 600; margin-top: 32px; }
+p { margin: 14px 0; }
+a { color: var(--accent); text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+header { padding-block: 52px 8px; }
+header .mark { display: block; width: 64px; height: 64px; margin-bottom: 22px; }
+header .links { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; margin-top: 18px; font-family: var(--mono); font-size: 13px; }
+header .links span { color: var(--muted); }
+header h1 { margin-top: 10px; }
+header .subtitle { font-family: var(--display); font-weight: 500; font-size: clamp(18px, 2.3vw, 22px); line-height: 1.3; color: var(--fg); opacity: 0.82; max-width: 46ch; margin-top: 14px; text-wrap: balance; }
+header .lede { font-size: 20px; color: var(--muted); max-width: 62ch; margin-top: 20px; }
+header .intro { max-width: 68ch; margin-top: 14px; }
+header .intro.key { font-size: 18px; }
+nav.toc { margin-top: 32px; max-width: 900px; font-size: 15px; columns: 2; column-gap: 40px; }
+nav.toc .toc-part { break-inside: avoid; margin-bottom: 18px; }
+nav.toc a.toc-head { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--log); border-bottom: 2px solid var(--log); padding-bottom: 5px; }
+nav.toc a { display: block; color: var(--fg); text-decoration: none; padding: 4px 0; border-bottom: 1px solid var(--line); break-inside: avoid; }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--band); padding: 1px 5px; border-radius: 3px; }
+pre { font-family: var(--mono); font-size: 13.5px; line-height: 1.55; background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; border-radius: 4px; overflow-x: auto; margin: 16px 0; }
+pre code { background: none; padding: 0; font-size: inherit; }
+.codepair { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.codepair .label { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 18px 0 -8px; }
+figure { margin: 30px 0; }
+figure .scroll { overflow-x: auto; }
+figure svg { max-width: 100%; height: auto; display: block; min-width: 660px; font-family: var(--body); color: var(--fg); }
+figcaption { font-size: 15px; color: var(--muted); margin-top: 10px; max-width: 70ch; }
+.tag { display: inline-block; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; margin-right: 8px; color: var(--muted); vertical-align: 1px; }
+.tag.measured { color: var(--accent); border-color: var(--accent); }
+svg .box { fill: var(--panel); stroke: currentColor; stroke-width: 1.1; }
+svg .soft { fill: var(--band); stroke: var(--line); stroke-width: 1; }
+svg .dashed { fill: none; stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 5 4; }
+svg .bandlabel { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; fill: var(--muted); }
+svg .t { font-size: 13px; fill: currentColor; }
+svg .tt { font-size: 13.5px; font-weight: 600; fill: currentColor; }
+svg .t2 { font-size: 11.5px; fill: var(--muted); }
+svg .lab { font-size: 11px; fill: var(--muted); font-family: var(--mono); }
+svg .num { font-size: 12px; font-weight: 600; fill: var(--panel); font-family: var(--mono); }
+svg .dot { fill: var(--accent); }
+svg .logbox { fill: var(--log-soft); stroke: var(--log); stroke-width: 1.6; }
+svg .logt { font-size: 14px; font-weight: 600; fill: currentColor; font-family: var(--display); }
+svg .accbox { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+svg .chunk { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
+svg .filt { fill: var(--log-soft); stroke: var(--log); stroke-width: 1; }
+svg .edge { stroke: currentColor; stroke-width: 1.2; fill: none; }
+svg .edge.log { stroke: var(--log); stroke-width: 1.6; }
+svg .edge.read { stroke: var(--accent); stroke-dasharray: 4 3; }
+svg .mk { fill: currentColor; }
+svg .mk-log { fill: var(--log); }
+svg .mk-acc { fill: var(--accent); }
+svg .mk-muted { fill: var(--muted); }
+svg .edge.muted { stroke: var(--muted); stroke-dasharray: 3 3; }
+svg .edge.acc { stroke: var(--accent); stroke-width: 1.6; }
+svg .guide { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; }
+svg .labelbg { fill: var(--bg); }
+svg .badbox { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 1.2; }
+svg .badt { font-size: 13.5px; font-weight: 600; fill: var(--bad); }
+svg .divider { stroke: var(--line); stroke-width: 1; }
+svg .edge.tangle { stroke: var(--log); stroke-width: 1.6; stroke-linecap: round; opacity: 0.85; }
+header figure { margin-top: 34px; }
+.tablewrap { overflow-x: auto; margin: 20px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 15.5px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--line); }
+th { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; border-top: 0; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.prose-table { max-width: 860px; }
+.tablecap { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+ul.plain, ol.plain { max-width: 68ch; padding-left: 22px; }
+ul.plain li, ol.plain li { margin: 7px 0; }
+.note { font-size: 15px; color: var(--muted); max-width: 68ch; }
+.closing { margin-top: 28px; padding: 18px 22px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--log); max-width: 68ch; }
+.closing p { margin: 0; }
+@media (max-width: 720px) {
+  .codepair { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  nav.toc { columns: 1; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+figure.shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+figure.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+figure.pair figcaption { grid-column: 1 / -1; }
+@media (max-width: 720px) { figure.pair { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <img class="mark" src="myna.svg" width="64" height="64" alt="Myna">
+  <div class="eyebrow">Data systems · November 2026</div>
+  <h1>Introducing Myna: a data and machine-learning workbench written in Crow</h1>
+  <p class="subtitle">Notebooks, queries, dashboards, experiments and models over one folder of Magpie logs</p>
+  <p class="links"><a href="book/">Read the book</a><span aria-hidden="true">·</span><a href="https://github.com/agncrow/myna">GitHub</a></p>
+  <p class="lede">A team that works with data usually keeps its work in several places: a catalog of tables, notebooks, saved queries and dashboards, a tracking server for experiments, a registry of models, and a scheduler that runs it all.</p>
+  <p class="intro">Each of those keeps its own records in its own store, and the team keeps them in step.</p>
+  <p class="intro key"><b>Myna keeps all of it in one folder of Magpie logs.</b> The notebooks' tables, the saved queries, the dashboards' tiles, every run of every experiment and every version of every model are rows of logs side by side. Every page is derived from those logs.</p>
+  <p class="intro">Myna is written entirely in Crow, and its pages are Crow views, so there is no Python, no JavaScript framework and no second database. Its experiments and models do what MLflow does and answer MLflow's own Python client.</p>
+
+  <nav class="toc" aria-label="Contents">
+    <div class="toc-part"><a class="toc-head" href="#part1">Part 1 · The idea</a>
+      <a href="#folder">One folder, every page</a>
+    </div>
+    <div class="toc-part"><a class="toc-head" href="#part2">Part 2 · The workbench</a>
+      <a href="#notebooks">Notebooks</a>
+      <a href="#queries">Query, the catalog and dashboards</a>
+      <a href="#jobs">Jobs</a>
+    </div>
+    <div class="toc-part"><a class="toc-head" href="#part3">Part 3 · Experiments and models</a>
+      <a href="#logging">Logging a run</a>
+      <a href="#comparing">Comparing runs</a>
+      <a href="#registry">Registering and serving a model</a>
+      <a href="#client">MLflow's own client</a>
+      <a href="#bugs">MLflow's known bugs</a>
+    </div>
+    <div class="toc-part"><a class="toc-head" href="#part4">Part 4 · In practice</a>
+      <a href="#tested">How it is tested</a>
+      <a href="#notbuilt">What is not built</a>
+      <a href="#availability">Availability</a>
+    </div>
+  </nav>
+</header>
+
+<div class="part" id="part1">
+<div class="part-num">Part 1</div>
+<h2>The idea</h2>
+<p>What Myna holds, and where.</p>
+</div>
+
+<section class="prose" id="folder">
+<h3>One folder, every page</h3>
+<p>Everything Myna keeps is in one folder, the workspace. Each piece is a Magpie log. A change is a new row, and a read takes the latest row per key, so nothing is edited in place and the history of every record is kept.</p>
+<div class="tablewrap"><table class="prose-table">
+<thead><tr><th>Page</th><th>What it keeps</th><th>Log</th></tr></thead>
+<tbody>
+<tr><td>Notebooks</td><td>every version of every cell, every run and its output</td><td><code>_notebooks</code>, <code>_runs</code></td></tr>
+<tr><td>Query, Dashboards</td><td>saved queries, dashboards and their tiles</td><td><code>_queries</code>, <code>_dashboards</code>, <code>_tiles</code></td></tr>
+<tr><td>Jobs</td><td>the notebooks' schedules</td><td><code>_schedules</code></td></tr>
+<tr><td>Experiments, Models</td><td>experiments, runs, params, metrics, tags, datasets, models, versions, aliases, traces</td><td><code>_ml_*</code>, and files in <code>.mlartifacts/</code></td></tr>
+<tr><td>Catalog</td><td>the tables the notebooks write</td><td>any other name</td></tr>
+</tbody></table></div>
+<p>A notebook's table and an experiment's metrics are the same kind of thing, a log, so the Catalog lists one beside the other, and a dashboard can chart either.</p>
+</section>
+
+<div class="part" id="part2">
+<div class="part-num">Part 2</div>
+<h2>The workbench</h2>
+<p>The pages that hold a team's data work, from a question to a schedule.</p>
+</div>
+
+<section class="prose" id="notebooks">
+<h3>Notebooks</h3>
+<p>A notebook is a list of cells of Crow. A run takes the cells top to bottom as one program, run by the installed crow in the workspace's folder. A name one cell sets is there in the next, and a table a cell writes is a Magpie log beside the others.</p>
+<p>Each cell shows its output, its status and its time. A stop or a refusal appears under the cell it names, and the cells after it are skipped. Every save is a version and every run is kept with its output, so History can open an old run or restore an old version.</p>
+</section>
+
+<section class="prose" id="queries">
+<h3>Query, the catalog and dashboards</h3>
+<p>The Catalog lists the tables with their columns and latest rows. The Query page asks one of Magpie's reading verbs of a table as a form: the latest rows, a summary grouped by columns, or a search of a text column. A saved query can be opened as the first cell of a new notebook, or pinned to a dashboard.</p>
+<p>A dashboard sets saved queries side by side as tiles of bars, a number or a table. Each tile's answer is kept as a Parquet file, so a dashboard opens without asking its queries again. One given an interval is refreshed by the scheduler.</p>
+</section>
+
+<section class="prose" id="jobs">
+<h3>Jobs</h3>
+<p>The scheduler is a Crow program of its own. Every fifteen seconds it runs the notebooks that are due and refreshes the dashboards that are due, recording each run. The Jobs page starts it and lists the schedules and their runs.</p>
+</section>
+
+<div class="part" id="part3">
+<div class="part-num">Part 3</div>
+<h2>Experiments and models</h2>
+<p>MLflow's tracking and registry, in the order work happens: a run is logged, runs are compared, the best is registered, served and evaluated. The screenshots below are of compiled Myna holding the sample that <code>tests/mlflow/house_prices.co</code> makes: a linear model of 200 made-up houses, fitted at three learning rates.</p>
+</div>
+
+<section id="logging">
+<div class="prose">
+<h3>Logging a run</h3>
+<p>A notebook cell logs into a run with a few calls. The run then appears on the Experiments page:</p>
+<pre><code>use myna.tracking
+
+tracking.ready[]
+run = tracking.start_run['house-prices', 'linear-lr0.1']
+p = tracking.log_params[run, map[lr = '0.1', epochs = '60']]
+for step in range[60]
+    m = tracking.log_metric[run, 'rmse', 1000.0 / (step + 1), step]
+done = tracking.end_run[run, 'FINISHED']</code></pre>
+<p>Each call answers what it wrote, or why not. Crow does not let a value that can fail be dropped, so a failed write stops the cell instead of passing unseen.</p>
+</div>
+<figure class="shot"><img src="shots/experiments.png" alt="The Experiments page: the experiments on the left, the chosen experiment's runs as a table on the right, with a filter in MLflow's search grammar" width="1280" height="733" loading="lazy">
+<figcaption><span class="tag">Screenshot</span>An experiment's runs. The filter takes MLflow's search grammar, such as <code>metrics.rmse &lt; 6000 and params.lr = '0.3'</code>.</figcaption></figure>
+<figure class="pair shot"><img src="shots/run.png" alt="A run's overview: status, times, user, source, its folder, the params and the latest metrics" width="1280" height="733" loading="lazy"><img src="shots/run_metrics.png" alt="A run's Metrics tab: the rmse falling over sixty steps" width="1280" height="733" loading="lazy">
+<figcaption><span class="tag">Screenshot</span>A run's page: its overview, and its metric over the steps it was logged at.</figcaption></figure>
+</section>
+
+<section id="comparing">
+<div class="prose">
+<h3>Comparing runs</h3>
+<p>Compare sets runs side by side and marks with ● every parameter whose value differs. It plots any value against another, and draws each metric with a line per run.</p>
+</div>
+<figure class="pair shot"><img src="shots/compare.png" alt="Three runs compared: their status, start and duration, the params with lr marked as differing, and the latest rmse" width="1280" height="733" loading="lazy"><img src="shots/compare_charts.png" alt="The learning rate against the final rmse, one point per run, and the rmse curves of the three runs" width="1280" height="733" loading="lazy">
+<figcaption><span class="tag">Screenshot</span>Three learning rates. At 0.03 the error is still falling after sixty steps; 0.1 and 0.3 both settle near 5,780.</figcaption></figure>
+</section>
+
+<section id="registry">
+<div class="prose">
+<h3>Registering and serving a model</h3>
+<p>A model is a folder of files: an <code>MLmodel</code> file in MLflow's format, naming the flavor <code>crow</code> and the input and output columns, and <code>predict.co</code>, which answers one prediction per row. The best run's model is registered as <code>house-price</code>, given the alias <code>champion</code>, and evaluated on the held-out rows with scikit-learn's definitions of the scores.</p>
+<p>A version is served at <code>/serve/:model/:ref/invocations</code> and takes any of MLflow's input forms. Each request runs the model in a scratch copy of its folder, under a time limit, so a slow or failing model cannot stop the workbench. The model page's <b>Try it</b> box sends the same request.</p>
+</div>
+<figure class="pair shot"><img src="shots/model.png" alt="The house-price model: its versions, and version 1 opened with its stage, aliases, source and MLmodel" width="1280" height="733" loading="lazy"><img src="shots/model_try.png" alt="Version 1's MLmodel file and the Try it box with its Predict button" width="1280" height="733" loading="lazy">
+<figcaption><span class="tag">Screenshot</span>A registered model: its versions, a version's stage and aliases, its <code>MLmodel</code>, and the box that asks it for predictions.</figcaption></figure>
+</section>
+
+<section class="prose" id="client">
+<h3>MLflow's own client</h3>
+<p>Myna answers MLflow's HTTP protocol: experiments, runs, metrics and their history, tags, logged models, the registry with aliases and stages, and traces with their feedback. So MLflow's Python client works against it after <code>mlflow.set_tracking_uri('http://localhost:3800')</code>. Errors take MLflow's form, such as <code>RESOURCE_DOES_NOT_EXIST</code> with status 404. The client is how Myna is tested, not something it depends on.</p>
+</section>
+
+<section class="prose" id="bugs">
+<h3>MLflow's known bugs</h3>
+<p>Before the store was written, MLflow's issue tracker was read for bugs in the parts Myna rebuilds, and each one that applies is ruled out by the design. A few of them:</p>
+<ul class="plain">
+<li>A step or a time of 0 is kept, not read as missing, and NaN is stored and shown as NaN.</li>
+<li>The latest value of a metric is the one at the greatest step, not the last row written.</li>
+<li>A search is parsed, never pasted into a query. Numbers compare as numbers, and paging has one stable order, so no run is seen twice or skipped.</li>
+<li>A registered model's rename moves its tags, aliases and versions; deleting a version removes its aliases.</li>
+<li>A file path with <code>..</code>, an absolute path or a backslash is refused.</li>
+</ul>
+<p>The book's chapter <a href="book/mlflow-bugs.html">MLflow's Known Bugs</a> lists all of them.</p>
+</section>
+
+<div class="part" id="part4">
+<div class="part-num">Part 4</div>
+<h2>In practice</h2>
+<p>What was checked, what is left out, and where to get it.</p>
+</div>
+
+<section class="prose" id="tested">
+<h3>How it is tested</h3>
+<p>Every part's tests run twice, interpreted and compiled, and Crow holds a program's answers to be the same in both. Two checks reach outside Myna:</p>
+<div class="tablewrap"><table class="prose-table">
+<thead><tr><th>Check</th><th>What is compared</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td><span class="tag measured">Measured</span>The house-price model, in Crow and in Python</td><td><code>tests/mlflow/house_prices.co</code> trains, registers, evaluates and serves the model in Myna. <code>house_prices.py</code> trains the same model in plain Python loops, adding in the same order, and compares: the features' centres and spreads, every run's weights and final error, and the three served predictions, for exact equality of the printed floats; scikit-learn's six scores within 1e-12, since numpy adds in another order.</td><td>Every number agrees, interpreted and compiled</td></tr>
+<tr><td><span class="tag measured">Measured</span>MLflow's own Python client against Myna</td><td><code>tests/mlflow/client_check.py</code> drives a running Myna through experiments, runs, params, metric history, tags, search, artifacts, a scikit-learn model logged as files, the registry with versions, aliases, stages and tags, and deletes and restores.</td><td>25 of 25 checks pass</td></tr>
+</tbody></table></div>
+<p>Building Myna found 31 bugs in Crow, the language, and each was fixed in Crow with a test that reproduces it before Myna went on.</p>
+</section>
+
+<section class="prose" id="notbuilt">
+<h3>What is not built</h3>
+<p>Everything is built in Crow, so the parts of MLflow that are integrations with Python frameworks or outside services are left out: the Python model flavors and autologging, cloud artifact stores, SQL backends, deployment targets, and judges that call outside models. Myna has its own flavor, its own serving and its own scores in their place.</p>
+<p>Some Crow work is still to do. The artifact proxy, which a client on another machine needs, is missing. So are projects, a classifier's log loss and confusion matrix, image and table previews among a run's files, and a model kept warm between requests: today each request starts the model again, about a second per call. On the workbench, the page for asking a model questions is not built yet. The book's <a href="book/not-built.html">Not Built</a> chapter lists each item with its reason.</p>
+</section>
+
+<section class="prose" id="availability">
+<h3>Availability</h3>
+<p>Crow is open source at <a href="https://github.com/agncrow/crow">github.com/agncrow/crow</a>. Myna is built on <a href="https://agncrow.github.io/magpie/">Magpie</a>.</p>
+<p>Myna is a Crow program at <a href="https://github.com/agncrow/myna">github.com/agncrow/myna</a>, source-available under the Business Source License 1.1, as Magpie is: free for development, testing and non-commercial use, and for commercial production on one machine per application, with each version becoming Apache-2.0 four years after it is published. The <a href="book/licensing.html">licensing page</a> says this in plain words.</p>
+<p>The Myna book walks through every page, the calls a notebook makes, MLflow's HTTP API, serving and evaluation, and the tests: <a href="book/">the book</a>.</p>
+<div class="closing">
+<p>Myna's idea is that a team's data work can live in one folder: tables, questions, dashboards, experiments and models side by side as logs, with every page derived from them.</p>
+</div>
+</section>
+</main>
+</body>
+</html>
