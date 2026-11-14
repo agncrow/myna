@@ -1,8 +1,10 @@
---- A table's size and its columns, read off its files and never off its
---- rows. The Catalog and the drawn workbench list every table with both
---- on every render, and had read each table whole, twice — `magpie.latest`
---- for its count, and again for its columns: 44 seconds a render over a
---- project whose two largest logs hold 400,000 rows each.
+--- A table's size, its columns and its first rows, read off its files
+--- and never off rows a page does not show. The Catalog and the drawn
+--- workbench list every table with its size and its columns on every
+--- render, and show an opened table's first thousand rows: each had read
+--- the table whole with `magpie.latest` — 44 seconds a render over a
+--- project whose two largest logs hold 400,000 rows each, and every
+--- render of an opened one read it whole again.
 ---
 --- The columns are the ones the log's live files and its pending rows
 --- hold together (magpie.sequencer's `shape_of`: their footers), which
@@ -13,13 +15,33 @@
 --- each live file's path, rows, positions, size and the time it was
 --- written are the stamp the count is kept under, so a log written to,
 --- merged or made again at its path is counted anew.
+---
+--- A table's first rows are read from the files that hold them: a log
+--- with no keys reads its first files, by position, until they hold the
+--- rows asked; a keyed log finds its first rows — each the newest of its
+--- key — by the key columns it is counted by, read once with its count,
+--- and then reads those rows whole. The rows shown are kept under the
+--- stamp as well, so a page asking on every render reads nothing more
+--- while the log stays as it was.
 use frame, magpie, memory, sys
 use magpie.manifest
 use magpie.sequencer
 use magpie.merger
+use magpie.fileformat
 
---- a keyed log's count, and the stamp of the files it was counted from
-struct Kept [stamp, rows]
+--- a keyed log's count and its first rows' keys and positions (each
+--- key's newest row, in position order, as `magpie.latest` answers the
+--- key columns), and the stamp of the files they were read from
+struct Kept [stamp, rows, first]
+
+--- a log's first rows as a read answers them, as many as were read, and
+--- the stamp of the files they were read from
+struct Shown [stamp, n, rows]
+
+--- how many of a log's first rows are read and kept at once: the most a
+--- page shows
+fn _kept[]
+    return 1000
 
 --- whether the row of the log's listing (`magpie.batches`) is a file a
 --- read reaches: a batch, a segment or the pending rows, holding a
@@ -103,17 +125,121 @@ fn rows[dir]
             if _live[b, i]
                 total = total + b.rows[i]
         return total
-    stamp = _stamp[b]
-    name = 'myna/tally/`canonical[dir]`'
-    kept = recall[name, Kept['', 0]]
-    if kept.stamp eq stamp
-        return kept.rows
-    f = magpie.latest[dir, columns = m.keys]
-    if not f.ok
+    k = _newest[dir, m.keys, _stamp[b]]
+    if not k.ok
         return 0
-    n = len[f]
-    remember[name, Kept[stamp, n]]
-    return n
+    return k.rows
+
+--- a keyed log's count and its first rows' keys and positions, read with
+--- its key columns alone and kept for the process while its files stay
+--- as the stamp says
+fn _newest[dir, by, stamp]
+    name = 'myna/tally/`canonical[dir]`'
+    kept = recall[name, Kept['', 0, frame.new[]]]
+    if kept.stamp eq stamp
+        return kept
+    f = magpie.latest[dir, columns = by]
+    if not f.ok
+        return error[f.reason, 'magpie']
+    made = Kept[stamp, len[f], frame.head[f, _kept[]]]
+    remember[name, made]
+    return made
+
+--- `preview[dir, n]`: the log's first `n` rows as a table — what
+--- `frame.head[magpie.latest[dir], n]` answers, its refusal too — read
+--- from the files that hold them, and kept for the process while the
+--- log's files stay as they were (the first thousand, whatever fewer is
+--- asked); a log a read refuses, one with no rows and no log are asked
+--- of the whole read
+fn preview[dir, n]
+    if n lt 1
+        return _whole[dir, n]
+    b = magpie.batches[dir]
+    if not b.ok
+        return _whole[dir, n]
+    paths = _paths[b]
+    if len[paths] eq 0
+        return _whole[dir, n]
+    stamp = _stamp[b]
+    name = 'myna/tally/`canonical[dir]`/shown'
+    shown = recall[name, Shown['', 0, frame.new[]]]
+    if shown.stamp eq stamp and shown.n gte n
+        return frame.head[shown.rows, n]
+    s = sequencer.shape_of[paths]
+    if not s.ok
+        return _whole[dir, n]
+    m = manifest.listed[dir]
+    if not m.ok
+        return _whole[dir, n]
+    want = max[n, _kept[]]
+    first = _first_rows[dir, b, m.keys, want, stamp]
+    if not first.ok
+        return first
+    --- (in the columns the whole log holds: the first files may lack a
+    --- column a later one added, or hold as ints what a later one made
+    --- floats)
+    rows = fileformat.fitted[first, s]
+    if not rows.ok
+        return _whole[dir, n]
+    remember[name, Shown[stamp, want, rows]]
+    return frame.head[rows, n]
+
+--- what the whole read answers first: the table read whole, its first
+--- `n` rows
+fn _whole[dir, n]
+    f = magpie.latest[dir]
+    if not f.ok
+        return f
+    return frame.head[f, n]
+
+--- the log's first `n` rows as a table, every column of them read from
+--- the files that hold them alone: a log with no keys up to the position
+--- by which its first files hold `n` rows; a keyed log the rows at the
+--- first `n` newest positions of its keys, read between the first of
+--- them and the last
+fn _first_rows[dir, b, by, n, stamp]
+    if len[by] eq 0
+        got = magpie.scan[dir, 0, _upto_rows[b, n]]
+        if not got.ok
+            return got
+        return frame.head[got, n]
+    wanted = _first_keys[dir, by, n, stamp]
+    if not wanted.ok
+        return wanted
+    if len[wanted] eq 0
+        return frame.head[magpie.scan[dir, 0, 0], 0]
+    --- (in position order: the first and the last are the ends)
+    lo = wanted._pos[0] + 0
+    hi = wanted._pos[len[wanted] - 1] + 0
+    got = magpie.scan[dir, lo, hi]
+    if not got.ok
+        return got
+    return frame.join[got, frame.select[wanted, ['_pos']], '_pos', 'semi']
+
+--- a keyed log's first `n` rows by their keys and positions: the kept
+--- ones, or as many read afresh where more are asked
+fn _first_keys[dir, by, n, stamp]
+    if n gt _kept[]
+        f = magpie.latest[dir, columns = by]
+        if not f.ok
+            return f
+        return frame.head[f, n]
+    k = _newest[dir, by, stamp]
+    if not k.ok
+        return error[k.reason, 'magpie']
+    return frame.head[k.first, n]
+
+--- the position by which the log's first live files, in position order,
+--- hold `n` rows: -1 (every row) where they hold fewer
+fn _upto_rows[b, n]
+    order = sort[b, 'first']
+    have = 0
+    for i in range[len[order]]
+        if _live[order, i]
+            have = have + order.rows[i]
+            if have gte n
+                return order.last[i] + 0
+    return -1
 
 --- what the whole read answers, which the tests hold `rows` and
 --- `columns` to: -1 and no columns where it is refused
@@ -129,6 +255,42 @@ fn _read_columns[dir]
     if not f.ok
         return none
     return f.columns
+
+--- the whole read's first rows as text, which the tests hold `preview`
+--- to, or its refusal
+fn _read_first[dir, n]
+    f = magpie.latest[dir]
+    if not f.ok
+        return 'refused: `f.reason`'
+    return _text_of[frame.head[f, n]]
+
+fn _shown[dir, n]
+    f = preview[dir, n]
+    if not f.ok
+        return 'refused: `f.reason`'
+    return _text_of[f]
+
+--- a frame as text: its columns and their kinds, then every cell, a line
+--- each (a frame's table shows a long one's first and last rows alone)
+fn _text_of[f]
+    lines = slice[['x'], 0, 0]
+    lines = push[lines, str[frame.head[f, 0]]]
+    for c in f.columns
+        col = f.`c`
+        for i in range[len[col]]
+            cell = col[i]
+            if cell.ok
+                lines = push[lines, '`c` `i` `cell`']
+            else
+                lines = push[lines, '`c` `i` missing']
+    return join[lines, '\n']
+
+--- the texts `w<a>` up to before `w<b>`, a log's cells
+fn _texts[a, b]
+    found = slice[['x'], 0, 0]
+    for i in range[a, b]
+        found = push[found, 'w`i`']
+    return found
 
 --- the folder the tests write their logs in, inside the tests' own
 --- workspace, and whether that workspace is theirs to remove
@@ -183,7 +345,7 @@ test a_log_made_again_at_its_path_is_counted_anew[]
     d = '`_room[]`/orders'
     w = magpie.batch[d, frame.new[id = [1, 2, 3], qty = [3, 5, 2]], by = ['id']]
     assert[rows[d] eq 3]
-    kept = recall['myna/tally/`canonical[d]`', Kept['', 0]]
+    kept = recall['myna/tally/`canonical[d]`', Kept['', 0, frame.new[]]]
     assert[kept.rows eq 3]
     assert[kept.stamp ne '']
     assert[rows[d] eq 3]
@@ -207,4 +369,69 @@ test a_log_a_read_refuses_is_no_table[]
     assert[_read_rows[d] eq -1]
     assert[rows[d] eq 0]
     assert[len[columns[d]] eq 0]
+    assert[starts[_shown[d, 5], 'refused: ']]
+    assert[_shown[d, 5] eq _read_first[d, 5]]
+    gone = rm[_room[]]
+
+--- a log with no keys shows its first rows read off its first files,
+--- however many are asked: what the whole read shows first, cell for cell
+test a_log_with_no_keys_shows_its_first_rows[]
+    assert[_own[], 'a test writes and removes logs: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[_room[]]
+    d = '`_room[]`/events'
+    assert[_shown[d, 3] eq _read_first[d, 3]]
+    w = magpie.batch[d, frame.new[n = range[600], w = _texts[0, 600]]]
+    w = magpie.batch[d, frame.new[n = range[600, 1200], w = _texts[600, 1200]]]
+    for k in [1, 2, 599, 600, 601, 1000, 1200, 1500]
+        assert[_shown[d, k] eq _read_first[d, k]]
+    --- a column a later file adds is shown in the first rows too, its
+    --- cells missing there, as the whole read shows it
+    w = magpie.batch[d, frame.new[n = range[1200, 1800], w = _texts[1200, 1800], at = _texts[0, 600]]]
+    for k in [1, 1000, 1001, 1800, 2500]
+        assert[_shown[d, k] eq _read_first[d, k]]
+    p = preview[d, 2]
+    assert[p.ok]
+    assert[p.columns eq _read_columns[d]]
+    gone = rm[_room[]]
+
+--- a keyed log shows its first rows by their keys: a key written again
+--- is shown once, where its newest row lies, as the whole read shows it
+test a_keyed_log_shows_its_first_rows_by_their_keys[]
+    assert[_own[], 'a test writes and removes logs: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[_room[]]
+    d = '`_room[]`/orders'
+    w = magpie.batch[d, frame.new[id = range[600], qty = range[600]], by = ['id']]
+    w = magpie.batch[d, frame.new[id = range[600, 1200], qty = range[600]]]
+    for k in [1, 2, 600, 1000, 1200, 1500]
+        assert[_shown[d, k] eq _read_first[d, k]]
+    --- ten ids of the first file written again, with a column the log
+    --- had not held: the first thousand rows pass over the ten's older
+    --- rows, and are read from the first two files, which lack the column
+    w = magpie.batch[d, frame.new[id = range[300, 310], qty = range[10], shop = _texts[0, 10]]]
+    for k in [1, 2, 300, 301, 990, 1000, 1189, 1190, 1200, 1500]
+        assert[_shown[d, k] eq _read_first[d, k]]
+    p = preview[d, 1]
+    assert[p.ok]
+    assert['shop' in p.columns]
+    gone = rm[_room[]]
+
+--- the rows shown are kept while the log's files stay as they were, and
+--- follow the log once it is written to or made again at its path
+test the_rows_shown_follow_the_log[]
+    assert[_own[], 'a test writes and removes logs: run the tests with ./test.sh, which sets MYNA_DATA']
+    gone = rm[_room[]]
+    d = '`_room[]`/orders'
+    w = magpie.batch[d, frame.new[id = [1, 2, 3], qty = [3, 5, 2]], by = ['id']]
+    assert[_shown[d, 2] eq _read_first[d, 2]]
+    shown = recall['myna/tally/`canonical[d]`/shown', Shown['', 0, frame.new[]]]
+    assert[shown.stamp ne '']
+    assert[shown.n eq 1000]
+    assert[len[shown.rows] eq 3]
+    assert[_shown[d, 2] eq _read_first[d, 2]]
+    w = magpie.batch[d, frame.new[id = [1], qty = [8]]]
+    assert[_shown[d, 2] eq _read_first[d, 2]]
+    assert[_shown[d, 3] eq _read_first[d, 3]]
+    gone = rm[d]
+    w = magpie.batch[d, frame.new[id = [7, 7, 7], qty = [1, 2, 3]], by = ['id']]
+    assert[_shown[d, 5] eq _read_first[d, 5]]
     gone = rm[_room[]]

@@ -1163,12 +1163,12 @@ fn tables[]
                     mine = push[mine, e]
     return concat[mine, own]
 
---- a table's newest rows, as many as asked
+--- a table's first rows, as many as asked — each the newest of its key —
+--- off the files that hold them (myna/tally.co): the Catalog asks for an
+--- opened table's on every render, and a read of the table whole had
+--- taken seconds each time for a table of 400,000 rows
 fn table_rows[name, n]
-    f = magpie.latest[_at[name]]
-    if not f.ok
-        return f
-    return head[f, n]
+    return tally.preview[_at[name], n]
 
 --- a table's size and its columns, off its files (myna/tally.co): the
 --- pages that list every table ask both of each on every render, and a
